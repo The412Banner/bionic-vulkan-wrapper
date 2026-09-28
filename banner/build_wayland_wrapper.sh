@@ -258,7 +258,12 @@ EOF
 	local a
 	shopt -s globstar nullglob
 	for a in "$build"/**/*.a "$mesa"/src/vulkan/wrapper/lib/*.a; do
-		"$ndk/llvm-nm" -A "$a" 2>/dev/null | grep -E ' U memfd_create$' || true
+		"$ndk/llvm-nm" -A "$a" 2>/dev/null | grep -E ' U (memfd_create|__emutls_get_address)$' || true
+	done
+	for a in "$build"/src/vulkan/wrapper/libvulkan_wrapper.so.p/*.o \
+	         "$ndkroot"/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_static.a \
+	         "$ndkroot"/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++abi.a; do
+		"$ndk/llvm-nm" -A "$a" 2>/dev/null | grep -E ' U __emutls_get_address$' | head -5 || true
 	done
 	shopt -u globstar nullglob
 	[ -f "$build/src/vulkan/wrapper/libvulkan_wrapper.so" ] || die "libvulkan_wrapper.so not built"

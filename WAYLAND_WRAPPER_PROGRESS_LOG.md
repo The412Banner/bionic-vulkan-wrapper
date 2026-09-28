@@ -108,3 +108,8 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   Android detection off under __TERMUX__), -include fcntl.h, libadrenotools from its own subproject,
   same checks. leegao legs kept for reference.
 - Run 10: started.
+- Run 10 `36485571348` (154d0c6): leegao legs green; **pipetto leg compiled and linked** (NEEDED
+  libandroid-sysvshm libadrenotools libnativewindow libm libxcb libX11-xcb libxcb-dri3/present/sync/
+  randr/shm libwayland-client libdrm libdl libc; 3 vk_icd exports) but failed one check: it imports
+  `__emutls_get_address` despite -fno-emulated-tls. Run 11 adds a diagnostic naming the object /
+  archive that references it.
