@@ -1,6 +1,5 @@
 /* MESA: A hack to avoid #ifdefs in driver code. */
-/* Bannerlator / Termux: not on a -D__TERMUX__ build (Termux mesa 0000-disable-android-detection). */
-#if defined(__ANDROID__) && !defined(__TERMUX__)
+#ifdef __ANDROID__
 
 #include <cutils/native_handle.h>
 #if ANDROID_API_LEVEL < 28

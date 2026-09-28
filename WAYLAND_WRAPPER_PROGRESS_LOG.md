@@ -52,3 +52,7 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   and vk_android_native_buffer.h's Android branch off under __TERMUX__; zlib = NDK system libz;
   -Dzstd=disabled. Checks now collect all failures and the artifacts upload even on failure.
 - Run 6: started.
+- Run 6 `36475342083` (f2e7c55): FAILURE compiling wsi_common_x11.c: its __TERMUX__ AHB path needs
+  native_handle_t, which came through vk_android_native_buffer.h's Android branch. Reverted that
+  header to leegao's (header-only, no link effect); DETECT_OS_ANDROID stays off.
+- Run 7: started.

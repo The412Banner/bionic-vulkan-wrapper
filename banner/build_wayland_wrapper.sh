@@ -25,8 +25,10 @@
 #     with the NDK's CMake, only to link against; at run time the imagefs copy is used, as today.
 #   * RUNPATH $ORIGIN (was the Termux prefix).
 #   * zlib from the NDK (system libz.so), zstd off -- the shipped wrapper needs neither Termux lib.
-#   * DETECT_OS_ANDROID off under -D__TERMUX__ (src/util/detect_os.h), as Termux mesa's
-#     0000-disable-android-detection.patch: no libcutils/liblog imports, like the shipped wrapper.
+#   * DETECT_OS_ANDROID off under -D__TERMUX__ (src/util/detect_os.h), the half of Termux mesa's
+#     0000-disable-android-detection.patch that matters: no libcutils/liblog imports, like the
+#     shipped wrapper. (vk_android_native_buffer.h keeps its Android branch: the X11 WSI's AHB
+#     path needs native_handle_t from it; header-only.)
 #
 # Environment (all optional): SPIRV_TOOLS_REF, SPIRV_HEADERS_REF, ADRENOTOOLS_REF, OUT_DIR, WITH_AHB=1
 # (apply the banner_ahb_v1 zero-copy patch, banner/ahb/).
