@@ -45,7 +45,7 @@ jobs:
           sha=$(git rev-parse --short HEAD)
           case "${{ matrix.variant }}" in
             ahb) tag=Wrapper-Wayland-AHB-TEST ;;
-            pipetto) tag=Wrapper-Pipetto-Wayland-TEST ;;
+            pipetto) tag=Wrapper-Wayland-PIPETTO-TEST ;;
             *) tag=Wrapper-Wayland-TEST ;;
           esac
           mkdir -p _pkg

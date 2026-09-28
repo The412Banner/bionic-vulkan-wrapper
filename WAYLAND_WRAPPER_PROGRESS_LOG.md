@@ -113,3 +113,13 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   randr/shm libwayland-client libdrm libdl libc; 3 vk_icd exports) but failed one check: it imports
   `__emutls_get_address` despite -fno-emulated-tls. Run 11 adds a diagnostic naming the object /
   archive that references it.
+- Run 11 `36486345016` (4ca7414): FAILURE, same single check. The diagnostic found NO reference to
+  `__emutls_get_address` in any wrapper object or any static archive in the build (Mesa libs, the
+  expat / libadrenotools subprojects), so it comes from the NDK's static C++ runtime pieces the
+  Pipetto C++ code pulls in (built with emulated TLS). The only thing on the device that exports it
+  is libc++_shared.so -- which is exactly what the shipped (Pipetto) wrapper links.
+  Fix: pipetto leg links libc++_shared.so (NEEDED, like shipped); new check: every C++-runtime
+  symbol the .so imports must be in banner/imagefs-libc++_shared.exports.txt (export list of the
+  device's imagefs libc++_shared.so, 2336 symbols, includes __emutls_get_address); plus a check for
+  the "Wrapper(%s)" device-name format. Zip renamed Wrapper-Wayland-PIPETTO-TEST-<sha>.zip.
+- Run 12: started.

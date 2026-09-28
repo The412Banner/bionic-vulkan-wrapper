@@ -202,6 +202,14 @@ configure_build(){
 		defs="$defs -include fcntl.h"
 		extra_opts=""
 	fi
+	# C++ runtime. leegao: static (its code only needs TLS-free parts of libc++). pipetto: shared,
+	# exactly like the shipped wrapper -- its C++ pulls libc++ parts built with emulated TLS
+	# (__emutls_get_address, run 10/11: in no Mesa object or subproject archive), and that symbol is
+	# exported only by libc++_shared.so. The imagefs copy provides it; package_check verifies every
+	# libc++ symbol the .so imports against banner/imagefs-libc++_shared.exports.txt (the export list
+	# of imagefs usr/lib/libc++_shared.so, sha256 5a6b0871..., taken from the device 2026-09-28).
+	local cxx_link="-static-libstdc++ -Wl,--exclude-libs,libc++_static.a -Wl,--exclude-libs,libc++abi.a -Wl,--exclude-libs,libunwind.a -Wl,--exclude-libs,libSPIRV-Tools.a -Wl,--exclude-libs,libSPIRV-Tools-opt.a"
+	[ "$SOURCE" = pipetto ] && cxx_link=""
 	# zlib = the NDK's (SONAME libz.so, a public system library), not Termux's libz.so.1.
 	mkdir -p "$work/pc"
 	cat > "$work/pc/zlib.pc" <<'PC'
@@ -229,7 +237,7 @@ pkg_config_libdir = ['$tprefix/lib/pkgconfig', '$tprefix/share/pkgconfig', '$wor
 c_args = [$(for f in $inc $defs $warn; do printf "'%s', " "$f"; done)]
 cpp_args = [$(for f in $inc $defs $warn; do printf "'%s', " "$f"; done)]
 c_link_args = [$(for f in $libs; do printf "'%s', " "$f"; done)]
-cpp_link_args = [$(for f in $libs -static-libstdc++ -Wl,--exclude-libs,libc++_static.a -Wl,--exclude-libs,libc++abi.a -Wl,--exclude-libs,libunwind.a -Wl,--exclude-libs,libSPIRV-Tools.a -Wl,--exclude-libs,libSPIRV-Tools-opt.a; do printf "'%s', " "$f"; done)]
+cpp_link_args = [$(for f in $libs $cxx_link; do printf "'%s', " "$f"; done)]
 
 [host_machine]
 system = 'android'
@@ -296,13 +304,27 @@ package_check(){
 		libandroid-sysvshm.so libadrenotools.so libdrm.so libxcb.so libX11-xcb.so libX11.so libxcb-dri3.so
 		libxcb-present.so libxcb-sync.so libxcb-randr.so libxcb-shm.so libxcb-xfixes.so libxshmfence.so
 		libz.so libzstd.so libwayland-client.so libffi.so"
+	[ "$SOURCE" = pipetto ] && ok="$ok libc++_shared.so"
 	local n
 	for n in $needed; do
 		grep -q " $n " <<< " $(echo $ok) " || fail "NEEDED $n is not in imagefs/usr/lib, the system, or the Proton lib/"
 	done
 	grep -q ' libwayland-client.so ' <<< " $needed " || fail "no NEEDED libwayland-client.so: the Wayland WSI is not in"
 	grep -q ' libadrenotools.so ' <<< " $needed " || fail "no NEEDED libadrenotools.so"
-	grep -q ' libc++_shared.so ' <<< " $needed " && fail "libc++_shared.so is NEEDED (expected static libc++)"
+	if [ "$SOURCE" = pipetto ]; then
+		grep -q ' libc++_shared.so ' <<< " $needed " || fail "pipetto: expected NEEDED libc++_shared.so"
+		# Every C++-runtime import must exist in the imagefs libc++_shared.so (NDK r29 headers vs an
+		# older runtime on the device).
+		local cxxmiss
+		cxxmiss="$(grep -E ' UND ' <<< "$syms" | awk '{print $NF}' | sed 's/@.*//' \
+			| grep -E '^(_Z|__cxa_|__gxx_|_Unwind_|__emutls_|__dynamic_cast)' | LC_ALL=C sort -u \
+			| LC_ALL=C comm -23 - "$repo/banner/imagefs-libc++_shared.exports.txt" || true)"
+		[ -z "$cxxmiss" ] || fail "C++ runtime symbols the imagefs libc++_shared.so lacks: $(echo $cxxmiss)"
+		log "C++ runtime imports: $(grep -E ' UND ' <<< "$syms" | awk '{print $NF}' | grep -cE '^(_Z|__cxa_|__gxx_|_Unwind_|__emutls_)') (all in imagefs libc++_shared.so)"
+		strings -a "$so" | grep -q '^Wrapper(%s)$' || fail "no \"Wrapper(%s)\" device-name format (not the shipped lineage?)"
+	else
+		grep -q ' libc++_shared.so ' <<< " $needed " && fail "libc++_shared.so is NEEDED (expected static libc++)"
+	fi
 	grep -q ' UND .*adrenotools_open_libvulkan' <<< "$syms" || fail "adrenotools_open_libvulkan not imported"
 	local wl; wl="$(echo "$syms" | grep -c ' UND .*wl_' || true)"
 	[ "$wl" -gt 10 ] || fail "only $wl wl_* imports: the Wayland WSI is not in"
@@ -316,7 +338,7 @@ package_check(){
 		grep -qE " UND +$sym\$" <<< "$syms" && fail "imports $sym: will not load against an older libwayland-client"
 	done
 	# Imports nothing on the device provides (BIND_NOW: one unresolved symbol = dlopen fails).
-	grep -qE ' UND +__emutls_get_address$' <<< "$syms" && fail "imports __emutls_get_address (emulated TLS)"
+	[ "$SOURCE" != pipetto ] && grep -qE ' UND +__emutls_get_address$' <<< "$syms" && fail "imports __emutls_get_address (emulated TLS)"
 	for sym in qsort_r pthread_getaffinity_np pthread_setaffinity_np; do
 		grep -qE " UND +$sym\$" <<< "$syms" && fail "imports $sym (API 36; weak-null on older Android)"
 	done
