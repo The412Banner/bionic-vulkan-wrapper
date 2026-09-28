@@ -32,3 +32,10 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   color-management / loader_wayland_wrap_buffer here, unbraced `continue` in the format loops).
   Dry-applied cleanly to the tree; compile untested until CI. `plain` stays the primary deliverable.
 - Run 3: started.
+- Run 3 `36472845871` (86e6e87): both legs FAILURE at compile; meson configure passed with
+  x11,wayland. (1) wrapper_device_memory.c uses O_RDWR/O_CLOEXEC without <fcntl.h> (Termux's
+  headers pulled it in). (2) the trampoline generator treats every non-const pointer param as an
+  output and dereferences it for logging; it exempted Display / xcb_connection_t but not
+  wl_display (vkGetPhysicalDeviceWaylandPresentationSupportKHR). The ahb leg's
+  wsi_common_wayland.c and banner-ahb-v1-protocol.c COMPILED.
+- Run 4: started.
