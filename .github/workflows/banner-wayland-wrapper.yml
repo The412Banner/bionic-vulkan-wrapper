@@ -21,7 +21,7 @@ jobs:
       matrix:
         # pipetto = Pipetto-crypto/mesa wrapper-25, the lineage Bannerlator ships in imagefs;
         # plain / ahb = this tree (leegao), Mesa's Wayland WSI as is / plus banner_ahb_v1 zero-copy.
-        variant: [pipetto, plain, ahb]
+        variant: [pipetto, pipetto-ahb, plain, ahb]
     steps:
       - uses: actions/checkout@v4
 
@@ -36,8 +36,8 @@ jobs:
       - name: Build
         env:
           OUT_DIR: ${{ github.workspace }}/_out
-          WITH_AHB: ${{ matrix.variant == 'ahb' && '1' || '0' }}
-          SOURCE: ${{ matrix.variant == 'pipetto' && 'pipetto' || 'leegao' }}
+          WITH_AHB: ${{ (matrix.variant == 'ahb' || matrix.variant == 'pipetto-ahb') && '1' || '0' }}
+          SOURCE: ${{ startsWith(matrix.variant, 'pipetto') && 'pipetto' || 'leegao' }}
         run: bash banner/build_wayland_wrapper.sh
 
       - name: Test package (Wayland game driver zip)
@@ -46,6 +46,7 @@ jobs:
           case "${{ matrix.variant }}" in
             ahb) tag=Wrapper-Wayland-AHB-TEST ;;
             pipetto) tag=Wrapper-Wayland-PIPETTO-TEST ;;
+            pipetto-ahb) tag=Wrapper-Wayland-PIPETTO-AHB-TEST ;;
             *) tag=Wrapper-Wayland-TEST ;;
           esac
           mkdir -p _pkg

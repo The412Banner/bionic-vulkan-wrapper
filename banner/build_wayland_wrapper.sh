@@ -217,7 +217,8 @@ apply_ahb(){
 	# Mesa 24.2 port of Banners-Turnip patches/wayland/banner_ahb_wsi.py (same helpers, this tree's
 	# anchors); the protocol glue sits next to it.
 	log "applying banner/ahb/banner_ahb_wsi_mesa242.py"
-	python3 "$repo/banner/ahb/banner_ahb_wsi_mesa242.py" "$repo" || die "banner_ahb_wsi_mesa242.py did not apply"
+	# Its anchors also match the Pipetto tree's Mesa 25.0 WSI (dry-applied 2026-09-28).
+	python3 "$repo/banner/ahb/banner_ahb_wsi_mesa242.py" "$mesa" || die "banner_ahb_wsi_mesa242.py did not apply"
 }
 
 configure_build(){
@@ -415,7 +416,7 @@ EOF
 prepare
 if [ "$SOURCE" = pipetto ]; then
 	fetch_pipetto
-	[ "${WITH_AHB:-0}" = 1 ] && die "WITH_AHB is only ported to the leegao tree"
+	apply_ahb
 else
 	build_spirv_tools
 	build_adrenotools

@@ -157,3 +157,6 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   (stderr -> wine_debug.log). The __TERMUX__ X11 path presents AHardwareBuffers and never used
   modifiers; its DRI3 modifier re-query is kept off so X11 behaviour does not change.
 - Run 14: started.
+- Secondary: banner/ahb/banner_ahb_wsi_mesa242.py dry-applies cleanly to the Pipetto tree's Mesa 25.0
+  WSI too, so a `pipetto-ahb` leg (Pipetto + explicit modifiers + banner_ahb_v1 zero-copy) is added.
+- Run 15 (adds pipetto-ahb; run 14 still going): started.
