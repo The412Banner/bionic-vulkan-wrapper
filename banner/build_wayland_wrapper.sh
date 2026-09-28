@@ -169,6 +169,46 @@ patch("src/util/detect_os.h", "#if defined(__ANDROID__)\n#define DETECT_OS_ANDRO
       "/* Bannerlator: not the Android platform on a -D__TERMUX__ build (Termux mesa 0000-disable-android-detection). */\n"
       "#if defined(__ANDROID__) && !defined(__TERMUX__)\n#define DETECT_OS_ANDROID 1\n#endif\n")
 print("pipetto: old-libwayland compat + Android detection off applied")
+
+# Explicit DRM format modifiers for the Wayland WSI. The wrapper never set
+# wsi_device.supports_modifiers (drivers do this themselves after wsi_device_init), so
+# wsi_common_wayland.c took the legacy path: no modifier list, image created with the "scanout"
+# flag, dma-buf shared with DRM_FORMAT_MOD_INVALID -- which Bannerlator's compositor cannot import
+# (device test 2026-09-28 18:30: white screen, "could not import GPU frames ... modifier
+# 0xffffffffffffff"). Turn it on when the driver underneath has both extensions the modifier path
+# needs; BANNER_WSI_NO_MODIFIERS=1 turns it back off.
+patch("src/vulkan/wrapper/wrapper_physical_device.c",
+      "      pdevice->vk.wsi_device = &pdevice->wsi_device;\n",
+      "      pdevice->vk.wsi_device = &pdevice->wsi_device;\n"
+      "      {\n"
+      "         const char *nomod = getenv(\"BANNER_WSI_NO_MODIFIERS\");\n"
+      "         pdevice->wsi_device.supports_modifiers =\n"
+      "            pdevice->base_supported_extensions.EXT_image_drm_format_modifier &&\n"
+      "            pdevice->base_supported_extensions.EXT_external_memory_dma_buf &&\n"
+      "            !(nomod && nomod[0] == '1');\n"
+      "         fprintf(stderr, \"wrapper-wsi: explicit DRM format modifiers %s (driver: drm_format_modifier=%d dma_buf=%d)\\n\",\n"
+      "                 pdevice->wsi_device.supports_modifiers ? \"on\" : \"off\",\n"
+      "                 pdevice->base_supported_extensions.EXT_image_drm_format_modifier,\n"
+      "                 pdevice->base_supported_extensions.EXT_external_memory_dma_buf);\n"
+      "      }\n")
+patch("src/vulkan/wrapper/wrapper_physical_device.c", "#include <math.h>\n",
+      "#include <math.h>\n#include <stdio.h>\n#include <stdlib.h>\n")
+# The X11 path of this tree (__TERMUX__) presents AHardwareBuffers (WSI_IMAGE_TYPE_ANDROID) and
+# never used modifiers; keep its DRI3 modifier re-query off now that supports_modifiers can be true.
+patch("src/vulkan/wsi/wsi_common_x11.c",
+      "wsi_x11_swapchain_query_dri3_modifiers_changed(struct x11_swapchain *chain)\n{\n",
+      "wsi_x11_swapchain_query_dri3_modifiers_changed(struct x11_swapchain *chain)\n{\n"
+      "#ifdef __TERMUX__\n   return false; /* Bannerlator: AHB presentation, no DRI3 modifiers */\n#endif\n")
+# One line per Wayland swapchain: what its buffers were shared as.
+patch("src/vulkan/wsi/wsi_common_wayland.c",
+      "   chain->present_ids.valid_refresh_nsec = false;\n",
+      "   fprintf(stderr, \"wrapper-wsi: wayland swapchain %ux%u vkformat %d drm 0x%08x: %u images, %s, modifier 0x%016llx\\n\",\n"
+      "           chain->extent.width, chain->extent.height, chain->vk_format, chain->drm_format,\n"
+      "           chain->base.image_count,\n"
+      "           chain->buffer_type == WSI_WL_BUFFER_NATIVE ? \"dma-buf\" : \"shm\",\n"
+      "           chain->base.image_count ? (unsigned long long)chain->images[0].base.drm_modifier : 0ull);\n"
+      "   chain->present_ids.valid_refresh_nsec = false;\n")
+print("pipetto: explicit modifiers + per-swapchain log applied")
 PY2
 }
 

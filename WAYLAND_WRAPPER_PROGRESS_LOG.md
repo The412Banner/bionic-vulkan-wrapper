@@ -139,3 +139,21 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
 - STAGED /sdcard/Download/Wayland/Wrapper-Wayland-PIPETTO-TEST-1e397c3.zip
   sha256 cd2f06f535bf1419832344c0574bf61c43733620750dce48f45fe6be8bb4afe3
   (+ Wrapper-Wayland-PIPETTO-1e397c3-raw/libvulkan_wrapper.so 527b81c1...). CI-green, not device-tested.
+
+## 2026-09-28 18:30 -- device test of PIPETTO 1e397c3
+
+- vkCreateDevice passes; DXVK: "Device : Wrapper(Adreno (TM) 750)", swapchain created, the game
+  renders (compositor counts ~756 GPU frames/10 s) but the screen is WHITE: compositor log
+  `could not import GPU frames ... (1280x720, modifier 0xffffffffffffff)` = DRM_FORMAT_MOD_INVALID.
+- Cause: Pipetto src/vulkan/wrapper/wrapper_physical_device.c:213-222 calls wsi_device_init() and
+  never sets `wsi_device.supports_modifiers` (real drivers set it themselves after init; Turnip does).
+  So src/vulkan/wsi/wsi_common_wayland.c:3009 (`if (display->wl_dmabuf && wsi_device->supports_modifiers)`)
+  skips the compositor's modifier list, wsi_common_drm.c:513 falls back to the legacy "scanout"
+  image, and the dma-buf goes out with an implicit modifier.
+- Fix (applied to the Pipetto tree by the build script, anchors asserted):
+  supports_modifiers = driver has VK_EXT_image_drm_format_modifier && VK_EXT_external_memory_dma_buf
+  (BANNER_WSI_NO_MODIFIERS=1 = old behaviour), logged once as "wrapper-wsi: explicit DRM format
+  modifiers on|off"; every Wayland swapchain logs "wrapper-wsi: wayland swapchain WxH ... modifier 0x..."
+  (stderr -> wine_debug.log). The __TERMUX__ X11 path presents AHardwareBuffers and never used
+  modifiers; its DRI3 modifier re-query is kept off so X11 behaviour does not change.
+- Run 14: started.
