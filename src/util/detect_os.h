@@ -24,7 +24,10 @@
  * Android defines __linux__, so DETECT_OS_LINUX and DETECT_OS_POSIX will
  * also be defined.
  */
-#if defined(__ANDROID__)
+/* Bannerlator / Termux: a bionic Linux-style build (the wrapper, -D__TERMUX__) is not the Android
+ * platform: no libcutils properties/atrace, no liblog. Same as Termux mesa's
+ * 0000-disable-android-detection.patch, which the shipped wrapper was built with. */
+#if defined(__ANDROID__) && !defined(__TERMUX__)
 #define DETECT_OS_ANDROID 1
 #endif
 

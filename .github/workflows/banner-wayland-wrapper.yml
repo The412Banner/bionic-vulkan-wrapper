@@ -59,7 +59,8 @@ jobs:
           (cd _out && sha256sum *.zip libvulkan_wrapper.so)
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: wrapper-wayland-${{ matrix.variant }}-${{ github.sha }}
           path: _out/
-          if-no-files-found: error
+          if-no-files-found: warn

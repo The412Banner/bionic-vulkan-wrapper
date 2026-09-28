@@ -42,3 +42,13 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
 - Run 4 `36473622149` (9962585): FAILURE, same class: wrapper_physical_device.c calls open()/O_RDONLY
   without <fcntl.h> (the only other wrapper file doing so). Fixed.
 - Run 5: started.
+- Run 5 `36474321586` (219c006): COMPILED AND LINKED (both legs). Failed the checks:
+  `vk_icdNegotiateLoaderICDInterfaceVersion` / `vk_icdGetPhysicalDeviceProcAddr` hidden by my
+  `--exclude-libs,ALL` (they live in the static vulkan runtime); NEEDED had libcutils.so / libsync.so
+  (android_stub stubs: util/os_misc property_get + atrace on DETECT_OS_ANDROID) and Termux's
+  libz.so.1 / libzstd.so.1. The shipped wrapper imports none of those: it was built with Mesa's
+  Android detection off (Termux mesa 0000-disable-android-detection.patch).
+  Fixes: --exclude-libs only for libc++/libc++abi/libunwind/SPIRV-Tools archives; DETECT_OS_ANDROID
+  and vk_android_native_buffer.h's Android branch off under __TERMUX__; zlib = NDK system libz;
+  -Dzstd=disabled. Checks now collect all failures and the artifacts upload even on failure.
+- Run 6: started.

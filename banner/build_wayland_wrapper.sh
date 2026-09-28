@@ -16,7 +16,7 @@
 #   * platforms x11,wayland (was x11).
 #   * HAVE_WL_DISPATCH_QUEUE_TIMEOUT / HAVE_WL_CREATE_QUEUE_WITH_NAME left off (meson.build), so the
 #     .so loads against any libwayland-client >= 1.18 -- a host app may put an older one first.
-#   * libc++ linked statically (-static-libstdc++, --exclude-libs,ALL) instead of NEEDED
+#   * libc++ linked statically (-static-libstdc++, its archives --exclude-libs'd) instead of NEEDED
 #     libc++_shared.so: the imagefs libc++_shared.so is older than NDK r29's headers.
 #   * libandroid-shmem is linked from the Termux sysroot, then the NEEDED entry is renamed to
 #     libandroid-sysvshm.so, which is what the shipped wrapper uses (Winlator's SysV shm, same
@@ -24,6 +24,9 @@
 #   * libadrenotools.so is built from leegao/libadrenotools (the fork the wrapper is written against)
 #     with the NDK's CMake, only to link against; at run time the imagefs copy is used, as today.
 #   * RUNPATH $ORIGIN (was the Termux prefix).
+#   * zlib from the NDK (system libz.so), zstd off -- the shipped wrapper needs neither Termux lib.
+#   * DETECT_OS_ANDROID off under -D__TERMUX__ (src/util/detect_os.h), as Termux mesa's
+#     0000-disable-android-detection.patch: no libcutils/liblog imports, like the shipped wrapper.
 #
 # Environment (all optional): SPIRV_TOOLS_REF, SPIRV_HEADERS_REF, ADRENOTOOLS_REF, OUT_DIR, WITH_AHB=1
 # (apply the banner_ahb_v1 zero-copy patch, banner/ahb/).
@@ -43,7 +46,7 @@ ndk="$ndkroot/toolchains/llvm/prebuilt/linux-x86_64/bin"
 api=26          # TERMUX_PKG_API_LEVEL of leegao's recipe (AHardwareBuffer_* need 26)
 termux_repo="https://packages-cf.termux.dev/apt/termux-main"
 termux_pkgs="libwayland libwayland-protocols libdrm libffi libandroid-support libandroid-shmem
- libx11 libxcb libxau libxdmcp xorgproto libxrandr libxrender libxext libxfixes libxshmfence zlib zstd"
+ libx11 libxcb libxau libxdmcp xorgproto libxrandr libxrender libxext libxfixes libxshmfence"
 sysroot="$work/termux"
 tprefix="$sysroot/data/data/com.termux/files/usr"
 build="$work/build"
@@ -152,6 +155,15 @@ configure_build(){
 	local defs="-D__TERMUX__ -D__USE_GNU -D__ANDROID__"
 	local warn="-Wno-error -Wno-deprecated-declarations -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers -Wno-int-conversion"
 	local libs="-L$tprefix/lib -L$work/adrenotools-lib -landroid-shmem -ladrenotools"
+	# zlib = the NDK's (SONAME libz.so, a public system library), not Termux's libz.so.1.
+	mkdir -p "$work/pc"
+	cat > "$work/pc/zlib.pc" <<'PC'
+Name: zlib
+Description: NDK system zlib
+Version: 1.3.0
+Libs: -lz
+Cflags:
+PC
 	cat > "$work/cross.txt" <<EOF
 [binaries]
 ar = '$ndk/llvm-ar'
@@ -164,13 +176,13 @@ pkg-config = '/usr/bin/pkg-config'
 
 [properties]
 sys_root = '$sysroot'
-pkg_config_libdir = ['$tprefix/lib/pkgconfig', '$tprefix/share/pkgconfig']
+pkg_config_libdir = ['$tprefix/lib/pkgconfig', '$tprefix/share/pkgconfig', '$work/pc']
 
 [built-in options]
 c_args = [$(for f in $inc $defs $warn; do printf "'%s', " "$f"; done)]
 cpp_args = [$(for f in $inc $defs $warn; do printf "'%s', " "$f"; done)]
 c_link_args = [$(for f in $libs; do printf "'%s', " "$f"; done)]
-cpp_link_args = [$(for f in $libs -static-libstdc++ -Wl,--exclude-libs,ALL; do printf "'%s', " "$f"; done)]
+cpp_link_args = [$(for f in $libs -static-libstdc++ -Wl,--exclude-libs,libc++_static.a -Wl,--exclude-libs,libc++abi.a -Wl,--exclude-libs,libunwind.a -Wl,--exclude-libs,libSPIRV-Tools.a -Wl,--exclude-libs,libSPIRV-Tools-opt.a; do printf "'%s', " "$f"; done)]
 
 [host_machine]
 system = 'android'
@@ -192,6 +204,7 @@ EOF
 		-Db_ndebug=true -Dstrip=true \
 		-Dcpp_rtti=false -Dgbm=disabled -Dopengl=false -Dllvm=disabled -Dshared-llvm=disabled \
 		-Dplatforms=x11,wayland -Dgallium-drivers= -Dxmlconfig=disabled -Dvulkan-drivers=wrapper \
+		-Dzstd=disabled \
 		|| { cat "$build/meson-logs/meson-log.txt" | tail -80; die "meson setup failed"; }
 	ninja -C "$build" src/vulkan/wrapper/libvulkan_wrapper.so || die "ninja failed"
 	[ -f "$build/src/vulkan/wrapper/libvulkan_wrapper.so" ] || die "libvulkan_wrapper.so not built"
@@ -201,18 +214,20 @@ package_check(){
 	cd "$repo"
 	local re="$ndk/llvm-readelf" so="$out/libvulkan_wrapper.so"
 	cp -L "$build/src/vulkan/wrapper/libvulkan_wrapper.so" "$so"
-	patchelf --replace-needed libandroid-shmem.so libandroid-sysvshm.so "$so" || die "patchelf replace-needed failed"
-	patchelf --set-rpath '$ORIGIN' "$so" || die "patchelf set-rpath failed"
+	patchelf --replace-needed libandroid-shmem.so libandroid-sysvshm.so "$so" || fail "patchelf replace-needed failed"
+	patchelf --set-rpath '$ORIGIN' "$so" || fail "patchelf set-rpath failed"
 
+	local failures=0
+	fail(){ echo -e "${red}[check] $*${nc}" >&2; failures=$((failures+1)); }
 	local dyn syms needed
 	dyn="$("$re" -d "$so")"; syms="$("$re" --dyn-syms -W "$so")"
 	needed="$(echo "$dyn" | grep -oP 'NEEDED.*\[\K[^]]+' | tr '\n' ' ')"
 	log "NEEDED: $needed"
 	log "SONAME: $(echo "$dyn" | grep -oP 'SONAME.*\[\K[^]]+')"
 	log "RUNPATH: $(echo "$dyn" | grep -E 'RUNPATH|RPATH' || echo none)"
-	grep -q 'SONAME.*\[libvulkan_wrapper.so\]' <<< "$dyn" || die "SONAME is not libvulkan_wrapper.so"
+	grep -q 'SONAME.*\[libvulkan_wrapper.so\]' <<< "$dyn" || fail "SONAME is not libvulkan_wrapper.so"
 	for s in vk_icdGetInstanceProcAddr vk_icdNegotiateLoaderICDInterfaceVersion vk_icdGetPhysicalDeviceProcAddr; do
-		grep -qE "FUNC +GLOBAL +DEFAULT +[0-9]+ $s\$" <<< "$syms" || die "$s not exported"
+		grep -qE "FUNC +GLOBAL +DEFAULT +[0-9]+ $s\$" <<< "$syms" || fail "$s not exported"
 	done
 	# Every NEEDED lib must exist where the guest looks: imagefs/usr/lib (list taken from the device
 	# 2026-09-28), the Android system libs, or libwayland-client.so from the Proton wcp's lib/ (which
@@ -223,35 +238,36 @@ package_check(){
 		libz.so libzstd.so libwayland-client.so libffi.so"
 	local n
 	for n in $needed; do
-		grep -q " $n " <<< " $(echo $ok) " || die "NEEDED $n is not in imagefs/usr/lib, the system, or the Proton lib/"
+		grep -q " $n " <<< " $(echo $ok) " || fail "NEEDED $n is not in imagefs/usr/lib, the system, or the Proton lib/"
 	done
-	grep -q ' libwayland-client.so ' <<< " $needed " || die "no NEEDED libwayland-client.so: the Wayland WSI is not in"
-	grep -q ' libadrenotools.so ' <<< " $needed " || die "no NEEDED libadrenotools.so"
-	grep -q ' libc++_shared.so ' <<< " $needed " && die "libc++_shared.so is NEEDED (expected static libc++)"
-	grep -q ' UND .*adrenotools_open_libvulkan' <<< "$syms" || die "adrenotools_open_libvulkan not imported"
+	grep -q ' libwayland-client.so ' <<< " $needed " || fail "no NEEDED libwayland-client.so: the Wayland WSI is not in"
+	grep -q ' libadrenotools.so ' <<< " $needed " || fail "no NEEDED libadrenotools.so"
+	grep -q ' libc++_shared.so ' <<< " $needed " && fail "libc++_shared.so is NEEDED (expected static libc++)"
+	grep -q ' UND .*adrenotools_open_libvulkan' <<< "$syms" || fail "adrenotools_open_libvulkan not imported"
 	local wl; wl="$(echo "$syms" | grep -c ' UND .*wl_' || true)"
-	[ "$wl" -gt 10 ] || die "only $wl wl_* imports: the Wayland WSI is not in"
-	grep -q "VK_KHR_wayland_surface" "$so" || die "VK_KHR_wayland_surface string missing"
-	grep -q "VK_KHR_xcb_surface" "$so" || die "VK_KHR_xcb_surface string missing (X11 WSI dropped?)"
+	[ "$wl" -gt 10 ] || fail "only $wl wl_* imports: the Wayland WSI is not in"
+	grep -q "VK_KHR_wayland_surface" "$so" || fail "VK_KHR_wayland_surface string missing"
+	grep -q "VK_KHR_xcb_surface" "$so" || fail "VK_KHR_xcb_surface string missing (X11 WSI dropped?)"
 	# Symbols only a newer libwayland-client has (1.23: queue names, dispatch timeout, proxy queue;
 	# 1.24: wl_fixes). Any of them imported = will not load against an older libwayland-client.
 	local sym
 	for sym in wl_display_dispatch_queue_timeout wl_display_create_queue_with_name wl_fixes_interface \
 	           wl_proxy_get_queue wl_event_queue_get_name; do
-		grep -qE " UND +$sym\$" <<< "$syms" && die "imports $sym: will not load against an older libwayland-client"
+		grep -qE " UND +$sym\$" <<< "$syms" && fail "imports $sym: will not load against an older libwayland-client"
 	done
 	# The fallbacks must not leak out of the .so either.
 	grep -vE ' UND ' <<< "$syms" | grep -E ' (wl_display_dispatch_queue_timeout|wl_display_create_queue_with_name)$' >/dev/null \
-		&& die "exports a libwayland symbol (fallback not hidden)"
+		&& fail "exports a libwayland symbol (fallback not hidden)"
 	echo "$syms" | grep -E ' UND .*wl_' | awk '{print $NF}' | sort > "$out/wl-imports.txt"
 	echo "$syms" | grep -vE ' UND ' | grep -E 'FUNC|OBJECT' | grep GLOBAL | awk '{print $NF}' | sort > "$out/exports.txt"
 	log "$wl wl_* imports: $(tr '\n' ' ' < "$out/wl-imports.txt")"
 	log "exports: $(tr '\n' ' ' < "$out/exports.txt")"
 	if [ "${WITH_AHB:-0}" = 1 ]; then
-		grep -q banner_ahb_v1 "$so" || die "banner_ahb_v1 missing (zero-copy patch not in)"
+		grep -q banner_ahb_v1 "$so" || fail "banner_ahb_v1 missing (zero-copy patch not in)"
 		log "banner_ahb_v1: in"
 	fi
 	echo "$dyn" > "$out/dynamic.txt"
+	grep -E ' UND ' <<< "$syms" | awk '{print $NF}' | sort > "$out/undefined.txt"
 
 	# ICD manifest exactly like the shipped one (imagefs/usr/share/vulkan/icd.d/wrapper_icd.aarch64.json).
 	cat > "$out/wrapper_icd.aarch64.json" <<'EOF'
@@ -265,6 +281,7 @@ package_check(){
 EOF
 	(cd "$out" && sha256sum libvulkan_wrapper.so > libvulkan_wrapper.so.sha256)
 	ls -la "$out"
+	[ "$failures" = 0 ] || die "$failures check(s) failed (artifacts kept in $out)"
 }
 
 prepare
