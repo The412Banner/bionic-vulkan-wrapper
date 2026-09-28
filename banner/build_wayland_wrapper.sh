@@ -316,7 +316,7 @@ package_check(){
 		# Every C++-runtime import must exist in the imagefs libc++_shared.so (NDK r29 headers vs an
 		# older runtime on the device).
 		local cxxmiss
-		cxxmiss="$(grep -E ' UND ' <<< "$syms" | awk '{print $NF}' | sed 's/@.*//' \
+		cxxmiss="$(grep -E ' UND ' <<< "$syms" | awk '{print $NF}' | grep -v '@LIBC' | sed 's/@.*//' \
 			| grep -E '^(_Z|__cxa_|__gxx_|_Unwind_|__emutls_|__dynamic_cast)' | LC_ALL=C sort -u \
 			| LC_ALL=C comm -23 - "$repo/banner/imagefs-libc++_shared.exports.txt" || true)"
 		[ -z "$cxxmiss" ] || fail "C++ runtime symbols the imagefs libc++_shared.so lacks: $(echo $cxxmiss)"

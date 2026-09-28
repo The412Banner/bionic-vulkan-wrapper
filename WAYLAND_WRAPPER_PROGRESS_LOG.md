@@ -123,3 +123,7 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   device's imagefs libc++_shared.so, 2336 symbols, includes __emutls_get_address); plus a check for
   the "Wrapper(%s)" device-name format. Zip renamed Wrapper-Wayland-PIPETTO-TEST-<sha>.zip.
 - Run 12: started.
+- Run 12 `36491296974` (a149ed1): pipetto leg built with NEEDED libc++_shared.so; failed only my new
+  check, which wrongly counted bionic's `__cxa_atexit` / `__cxa_finalize` (@LIBC) as C++-runtime
+  imports. All 18 real libc++ imports are in the imagefs libc++_shared.so. Check fixed (skip @LIBC).
+- Run 13: started.
