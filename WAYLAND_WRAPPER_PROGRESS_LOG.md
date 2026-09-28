@@ -72,3 +72,16 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   logged (non-weak = Android 11+, the shipped one has it weak) with a diagnostic of which archive
   references it.
 - Run 9: started.
+- Run 9 `36478317956` (da89209): SUCCESS, both legs, headSha verified. Stripped 9.8 MB .so; NEEDED
+  libandroid-sysvshm libadrenotools liblog libnativewindow libz libm libxcb libX11-xcb libxcb-dri3
+  libxcb-present libxcb-sync libxcb-randr libxcb-shm libwayland-client libdrm libdl libc (all in
+  imagefs/usr/lib, the system, or the Proton wcp's lib/); exports exactly the 3 vk_icd* entry points;
+  28 wl_* imports, all exported by the libwayland-client in Proton 11.0-7-arm64ec-8 and
+  11.0-2.1-arm64ec-16 on the device, none of the >=1.23 symbols; no emutls/qsort_r/affinity imports;
+  memfd_create weak (as shipped); ELF TLS (Android 10+; device is API 34). ahb leg: banner_ahb_v1 in.
+- STAGED to /sdcard/Download/Wayland/:
+  - Wrapper-Wayland-TEST-da89209.zip      sha256 b561054f82c5b9c6a130b5eb4a112f6b6161ba354257ed084b2fde373691b1fa
+  - Wrapper-Wayland-AHB-TEST-da89209.zip  sha256 1aadfbde2b0569133b626ea550cc8753455dfb9c5dbc0e1d9a32254dd5484216
+  - Wrapper-Wayland-da89209-raw/ (libvulkan_wrapper.so dd5b7c4e..., libvulkan_wrapper-ahb.so 70462c1f...,
+    wrapper_icd.aarch64.json)
+- Device status: CI-green only, NOT device-tested.
