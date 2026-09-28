@@ -127,3 +127,15 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   check, which wrongly counted bionic's `__cxa_atexit` / `__cxa_finalize` (@LIBC) as C++-runtime
   imports. All 18 real libc++ imports are in the imagefs libc++_shared.so. Check fixed (skip @LIBC).
 - Run 13: started.
+- Run 13 `36491916124` (1e397c3): SUCCESS on all three legs, headSha verified. Pipetto leg:
+  2.6 MB stripped .so, SONAME libvulkan_wrapper.so, RUNPATH $ORIGIN, BIND_NOW; NEEDED
+  libandroid-sysvshm libadrenotools libnativewindow libm libxcb libX11-xcb libxcb-dri3/present/sync/
+  randr/shm libwayland-client libdrm libc++_shared libdl libc (same set as the shipped X11 wrapper +
+  libwayland-client, minus nothing); exports only the 3 vk_icd* entry points; 29 wl_* imports, all
+  exported by the Proton 11.0-2.1-arm64ec-16 / 11.0-7-arm64ec-8 libwayland-client, none of the
+  >=1.23 ones; 18 C++ runtime imports, all in the imagefs libc++_shared.so; memfd_create weak (as
+  shipped); "Wrapper(%s)" device-name format present -> DXVK will show "Wrapper(Adreno (TM) 750)";
+  VK_KHR_wayland_surface + VK_KHR_xcb_surface present.
+- STAGED /sdcard/Download/Wayland/Wrapper-Wayland-PIPETTO-TEST-1e397c3.zip
+  sha256 cd2f06f535bf1419832344c0574bf61c43733620750dce48f45fe6be8bb4afe3
+  (+ Wrapper-Wayland-PIPETTO-1e397c3-raw/libvulkan_wrapper.so 527b81c1...). CI-green, not device-tested.
