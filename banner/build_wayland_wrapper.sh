@@ -154,7 +154,9 @@ configure_build(){
 	log "native wayland-scanner $(pkg-config --modversion wayland-scanner)"
 
 	local inc="-I$tprefix/include"
-	local defs="-D__TERMUX__ -D__USE_GNU -D__ANDROID__"
+	# -fno-emulated-tls: ELF TLS (Android 10+), as the shipped wrapper (no __emutls_get_address import,
+	# which nothing on the device exports). Unavailable-API symbols (memfd_create < API 30) weak, as shipped.
+	local defs="-D__TERMUX__ -D__USE_GNU -D__ANDROID__ -D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__ -fno-emulated-tls"
 	local warn="-Wno-error -Wno-deprecated-declarations -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers -Wno-int-conversion"
 	local libs="-L$tprefix/lib -L$work/adrenotools-lib -landroid-shmem -ladrenotools"
 	# zlib = the NDK's (SONAME libz.so, a public system library), not Termux's libz.so.1.
@@ -216,6 +218,7 @@ package_check(){
 	cd "$repo"
 	local re="$ndk/llvm-readelf" so="$out/libvulkan_wrapper.so"
 	cp -L "$build/src/vulkan/wrapper/libvulkan_wrapper.so" "$so"
+	"$ndk/llvm-strip" --strip-unneeded "$so" || die "llvm-strip failed"
 	patchelf --replace-needed libandroid-shmem.so libandroid-sysvshm.so "$so" || fail "patchelf replace-needed failed"
 	patchelf --set-rpath '$ORIGIN' "$so" || fail "patchelf set-rpath failed"
 
@@ -257,6 +260,9 @@ package_check(){
 	           wl_proxy_get_queue wl_event_queue_get_name; do
 		grep -qE " UND +$sym\$" <<< "$syms" && fail "imports $sym: will not load against an older libwayland-client"
 	done
+	# Imports nothing on the device provides (BIND_NOW: one unresolved symbol = dlopen fails).
+	grep -qE ' UND +__emutls_get_address$' <<< "$syms" && fail "imports __emutls_get_address (emulated TLS)"
+	grep -E ' UND +memfd_create$' <<< "$syms" | grep -qv ' WEAK ' && fail "imports memfd_create non-weak (API 30)"
 	# The fallbacks must not leak out of the .so either.
 	grep -vE ' UND ' <<< "$syms" | grep -E ' (wl_display_dispatch_queue_timeout|wl_display_create_queue_with_name)$' >/dev/null \
 		&& fail "exports a libwayland symbol (fallback not hidden)"

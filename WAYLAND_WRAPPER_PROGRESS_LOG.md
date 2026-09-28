@@ -56,3 +56,12 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   native_handle_t, which came through vk_android_native_buffer.h's Android branch. Reverted that
   header to leegao's (header-only, no link effect); DETECT_OS_ANDROID stays off.
 - Run 7: started.
+- Run 7 `36476148938` (2fd6050): SUCCESS, both legs, all checks green (NEEDED all in imagefs/system/
+  Proton lib; 3 vk_icd exports; 28 wl_* imports, none of the >=1.23 ones; ahb leg: banner_ahb_v1 in).
+  NOT staged: review of the artifact found (a) the .so is unstripped (102 MB; -Dstrip only applies
+  on install), (b) an unversioned `__emutls_get_address` import (Mesa's thread_local qsort_r
+  fallback, emulated TLS at API 26) that nothing on the device exports -- with BIND_NOW that would
+  fail the dlopen, (c) `memfd_create` imported non-weak (shipped: weak @LIBC_R).
+  Fixes: llvm-strip --strip-unneeded; -fno-emulated-tls; -D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__;
+  checks for both imports.
+- Run 8: started.
