@@ -169,3 +169,17 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   - Wrapper-Wayland-PIPETTO-TEST-24acc19.zip      sha256 3a57b31e2baa4630378c3cacd55b35df12fee80a07e6872deeddeb01058d65c3
   - Wrapper-Wayland-PIPETTO-AHB-TEST-24acc19.zip  sha256 20a1131a1032ba804194e5fef212e9fceebaa575e88e1997414e4d5989ad4c51
   CI-green, not device-tested.
+
+## 2026-09-28 19:00 -- DEVICE-PROVEN: DiRT Showdown on Wayland through the Pipetto wrapper (24acc19)
+
+- Device: AYANEO Pocket FIT (Adreno 750), Bannerlator 3.1.3, container 3, Proton 11.0-2.1-arm64ec-16, Force Wayland.
+  The only real driver pick: AdrenoTools "Mesa Turnip v26.3.0-20260830-r4" (compositor + underneath the wrapper).
+- AHB build (Wrapper-Wayland-PIPETTO-AHB-TEST-24acc19) + BANNER_WAYLAND_ZERO_COPY=1: DXVK "Wrapper(Adreno (TM) 750)",
+  `banner-ahb: 1280x720 swapchain (5 images) on gralloc buffers: UBWC (QCOM_COMPRESSED)`; menu at 144 fps (display cap),
+  1438/1438 zero-copy frames per 10 s.
+- Plain build (Wrapper-Wayland-PIPETTO-TEST-24acc19), zero-copy off, present wait on: `wrapper-wsi: explicit DRM format
+  modifiers on`, swapchains XR24 modifier 0x0500000000000001, compositor copy path, ~110 fps in the menu.
+- The black screen / no sound / steady 19 fps seen first was the game pausing itself without window focus (DiRT mutes
+  and throttles when unfocused); one tap on the screen fixes it. Not a wrapper issue; focus handoff on Wayland is a
+  separate app/compositor follow-up.
+- leegao build (da89209) vkCreateDevice fault: not root-caused, superseded by the Pipetto lineage.
