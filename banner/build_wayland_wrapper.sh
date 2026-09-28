@@ -155,8 +155,10 @@ configure_build(){
 
 	local inc="-I$tprefix/include"
 	# -fno-emulated-tls: ELF TLS (Android 10+), as the shipped wrapper (no __emutls_get_address import,
-	# which nothing on the device exports). Unavailable-API symbols (memfd_create < API 30) weak, as shipped.
-	local defs="-D__TERMUX__ -D__USE_GNU -D__ANDROID__ -D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__ -fno-emulated-tls"
+	# which nothing on the device exports). NOT __ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__: it makes meson
+	# "find" qsort_r / pthread_*affinity_np (API 36) and the .so then calls a null weak symbol on older
+	# Android (seen in run 8).
+	local defs="-D__TERMUX__ -D__USE_GNU -D__ANDROID__ -fno-emulated-tls"
 	local warn="-Wno-error -Wno-deprecated-declarations -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers -Wno-int-conversion"
 	local libs="-L$tprefix/lib -L$work/adrenotools-lib -landroid-shmem -ladrenotools"
 	# zlib = the NDK's (SONAME libz.so, a public system library), not Termux's libz.so.1.
@@ -211,6 +213,13 @@ EOF
 		-Dzstd=disabled \
 		|| { cat "$build/meson-logs/meson-log.txt" | tail -80; die "meson setup failed"; }
 	ninja -C "$build" src/vulkan/wrapper/libvulkan_wrapper.so || die "ninja failed"
+	# Who references memfd_create (diagnostic only)?
+	local a
+	shopt -s globstar nullglob
+	for a in "$build"/**/*.a "$repo"/src/vulkan/wrapper/lib/*.a; do
+		"$ndk/llvm-nm" -A "$a" 2>/dev/null | grep -E ' U memfd_create$' || true
+	done
+	shopt -u globstar nullglob
 	[ -f "$build/src/vulkan/wrapper/libvulkan_wrapper.so" ] || die "libvulkan_wrapper.so not built"
 }
 
@@ -262,7 +271,10 @@ package_check(){
 	done
 	# Imports nothing on the device provides (BIND_NOW: one unresolved symbol = dlopen fails).
 	grep -qE ' UND +__emutls_get_address$' <<< "$syms" && fail "imports __emutls_get_address (emulated TLS)"
-	grep -E ' UND +memfd_create$' <<< "$syms" | grep -qv ' WEAK ' && fail "imports memfd_create non-weak (API 30)"
+	for sym in qsort_r pthread_getaffinity_np pthread_setaffinity_np; do
+		grep -qE " UND +$sym\$" <<< "$syms" && fail "imports $sym (API 36; weak-null on older Android)"
+	done
+	grep -qE ' UND +memfd_create$' <<< "$syms" && log "note: imports memfd_create (libc API 30 = Android 11+)"
 	# The fallbacks must not leak out of the .so either.
 	grep -vE ' UND ' <<< "$syms" | grep -E ' (wl_display_dispatch_queue_timeout|wl_display_create_queue_with_name)$' >/dev/null \
 		&& fail "exports a libwayland symbol (fallback not hidden)"

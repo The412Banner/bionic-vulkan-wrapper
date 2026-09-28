@@ -65,3 +65,10 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   Fixes: llvm-strip --strip-unneeded; -fno-emulated-tls; -D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__;
   checks for both imports.
 - Run 8: started.
+- Run 8 `36477429842` (e5b6f97): SUCCESS, stripped (9.8 MB), no emulated TLS -- but the weak-symbols
+  macro made meson detect qsort_r and pthread_{get,set}affinity_np (API 36) as available, so the .so
+  imported them weak: a null call on anything older than Android 16. NOT staged.
+  Fix: macro dropped (API-26-correct detection), checks fail on those three imports; memfd_create is
+  logged (non-weak = Android 11+, the shipped one has it weak) with a diagnostic of which archive
+  references it.
+- Run 9: started.
