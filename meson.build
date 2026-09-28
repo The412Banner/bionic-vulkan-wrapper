@@ -2067,18 +2067,13 @@ if with_platform_wayland
     dep_wayland_egl_headers = dep_wayland_egl.partial_dependency(compile_args : true)
   endif
   pre_args += '-DWL_HIDE_DEPRECATED'
-  if cc.has_function(
-      'wl_display_dispatch_queue_timeout',
-      prefix : '#include <wayland-client.h>',
-      dependencies: dep_wayland_client)
-    pre_args += ['-DHAVE_WL_DISPATCH_QUEUE_TIMEOUT']
-  endif
-  if cc.has_function(
-      'wl_display_create_queue_with_name',
-      prefix : '#include <wayland-client.h>',
-      dependencies: dep_wayland_client)
-    pre_args += ['-DHAVE_WL_CREATE_QUEUE_WITH_NAME']
-  endif
+  # Bannerlator: never use wl_display_dispatch_queue_timeout / wl_display_create_queue_with_name
+  # (libwayland-client >= 1.23) even when the headers have them. A host app can put its own older
+  # libwayland-client first on the library path, and the ICD would then fail to load on an undefined
+  # symbol. src/loader/loader_wayland_helper.c carries a fallback for each; leaving the HAVE_WL_*
+  # defines off makes the build use those. Checked after the build (readelf) by
+  # banner/build_wayland_wrapper.sh.
+  message('wayland: HAVE_WL_DISPATCH_QUEUE_TIMEOUT / HAVE_WL_CREATE_QUEUE_WITH_NAME left off (old-libwayland compat)')
 endif
 
 dep_x11 = null_dep

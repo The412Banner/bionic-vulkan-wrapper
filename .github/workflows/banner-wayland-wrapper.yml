@@ -1,0 +1,58 @@
+name: Wayland wrapper (TEST)
+
+# Builds libvulkan_wrapper.so with the X11 + Wayland WSI for Bannerlator's Wayland backend.
+# Artifacts only: no release, no tag. Runs on every push to banner/wayland-wsi (a workflow that only
+# exists on a non-default branch cannot be dispatched) and on manual dispatch once it reaches the
+# default branch.
+on:
+  push:
+    branches: [banner/wayland-wsi]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ninja-build glslang-tools bison flex pkg-config patchelf zip \
+            libwayland-dev libwayland-bin cmake python3-pip clang lld llvm
+          pip3 install --break-system-packages 'meson==1.5.2' mako pyyaml packaging
+          meson --version; glslangValidator --version | head -1; pkg-config --modversion wayland-scanner
+
+      - name: Build
+        env:
+          OUT_DIR: ${{ github.workspace }}/_out
+        run: bash banner/build_wayland_wrapper.sh
+
+      - name: Test package (Wayland game driver zip)
+        run: |
+          sha=$(git rev-parse --short HEAD)
+          mkdir -p _pkg
+          cp _out/libvulkan_wrapper.so _pkg/libvulkan_freedreno.so
+          cat > _pkg/meta.json <<JSON
+          {
+            "schemaVersion": 1,
+            "name": "Wrapper-Wayland-TEST-${sha}",
+            "description": "TEST: leegao bionic Vulkan wrapper built with the X11 + Wayland WSI, renamed so the Wayland game-driver importer takes it. The real driver underneath is the container's AdrenoTools pick (ADRENOTOOLS_DRIVER_PATH/NAME).",
+            "author": "The412Banner",
+            "packageVersion": "1",
+            "vendor": "Mesa",
+            "driverVersion": "wrapper ${sha}"
+          }
+          JSON
+          (cd _pkg && zip -q -X "../_out/Wrapper-Wayland-TEST-${sha}.zip" libvulkan_freedreno.so meta.json)
+          (cd _out && sha256sum *.zip libvulkan_wrapper.so)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wrapper-wayland-${{ github.sha }}
+          path: _out/
+          if-no-files-found: error
