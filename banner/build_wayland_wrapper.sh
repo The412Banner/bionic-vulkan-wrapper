@@ -123,6 +123,7 @@ build_adrenotools(){
 	cmake -S "$work/libadrenotools" -B "$work/libadrenotools/build" -G Ninja \
 		-DCMAKE_TOOLCHAIN_FILE="$ndkroot/build/cmake/android.toolchain.cmake" \
 		-DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-$api -DBUILD_SHARED_LIBS=ON \
+		-DCMAKE_SHARED_LINKER_FLAGS=-llog \
 		-DCMAKE_BUILD_TYPE=Release || die "cmake configure libadrenotools failed"
 	cmake --build "$work/libadrenotools/build" --target adrenotools || die "libadrenotools build failed"
 	mkdir -p "$work/adrenotools-lib"

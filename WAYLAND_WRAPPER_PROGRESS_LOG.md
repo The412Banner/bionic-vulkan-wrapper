@@ -20,3 +20,7 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
 - banner_ahb_wsi.py (zero-copy) does NOT apply as is: its anchors are current Mesa main
   (first miss: `#include "color-management-v1-client-protocol.h"`). Plain Wayland WSI first.
 - CI run 1: started (see below).
+- Run 1 `36471823104` (90fee58): FAILURE at libadrenotools link -- its CMakeLists links `android`
+  but not `log` (`__android_log_print` undefined). SPIRV-Tools static libs built fine (committed
+  headers match the fork). Fix: `-DCMAKE_SHARED_LINKER_FLAGS=-llog`.
+- Run 2: started.
