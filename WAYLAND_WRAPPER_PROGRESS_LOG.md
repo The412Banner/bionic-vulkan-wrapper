@@ -160,3 +160,12 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
 - Secondary: banner/ahb/banner_ahb_wsi_mesa242.py dry-applies cleanly to the Pipetto tree's Mesa 25.0
   WSI too, so a `pipetto-ahb` leg (Pipetto + explicit modifiers + banner_ahb_v1 zero-copy) is added.
 - Run 15 (adds pipetto-ahb; run 14 still going): started.
+- Run 14 `36493221427` (8efa5b3): SUCCESS (pipetto, plain, ahb).
+- Run 15 `36493298477` (24acc19): SUCCESS on all four legs incl. pipetto-ahb (banner_ahb_v1 in).
+  Same .so facts as run 13 (NEEDED set, 3 vk_icd exports, wl_* imports all in the Proton
+  libwayland-client, 18 C++ imports all in imagefs libc++_shared, "Wrapper(%s)") plus the two
+  "wrapper-wsi:" log lines.
+- STAGED /sdcard/Download/Wayland/:
+  - Wrapper-Wayland-PIPETTO-TEST-24acc19.zip      sha256 3a57b31e2baa4630378c3cacd55b35df12fee80a07e6872deeddeb01058d65c3
+  - Wrapper-Wayland-PIPETTO-AHB-TEST-24acc19.zip  sha256 20a1131a1032ba804194e5fef212e9fceebaa575e88e1997414e4d5989ad4c51
+  CI-green, not device-tested.
