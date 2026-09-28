@@ -26,7 +26,7 @@
 #   * RUNPATH $ORIGIN (was the Termux prefix).
 #
 # Environment (all optional): SPIRV_TOOLS_REF, SPIRV_HEADERS_REF, ADRENOTOOLS_REF, OUT_DIR, WITH_AHB=1
-# (apply Banners-Turnip's banner_ahb_wsi.py zero-copy patch; needs BANNERS_TURNIP_DIR).
+# (apply the banner_ahb_v1 zero-copy patch, banner/ahb/).
 
 set -eo pipefail
 
@@ -128,16 +128,18 @@ build_adrenotools(){
 	cmake --build "$work/libadrenotools/build" --target adrenotools || die "libadrenotools build failed"
 	mkdir -p "$work/adrenotools-lib"
 	cp -L "$work/libadrenotools/build/libadrenotools.so" "$work/adrenotools-lib/" || die "libadrenotools.so not produced"
-	"$ndk/llvm-readelf" --dyn-syms -W "$work/adrenotools-lib/libadrenotools.so" | grep -q ' adrenotools_open_libvulkan$' \
-		|| die "built libadrenotools.so does not export adrenotools_open_libvulkan"
+	local ats; ats="$("$ndk/llvm-readelf" --dyn-syms -W "$work/adrenotools-lib/libadrenotools.so")"
+	grep -qE ' adrenotools_open_libvulkan$' <<< "$ats" \
+		|| { echo "$ats" | head -60; die "built libadrenotools.so does not export adrenotools_open_libvulkan"; }
 	log "libadrenotools SONAME: $("$ndk/llvm-readelf" -d "$work/adrenotools-lib/libadrenotools.so" | grep SONAME || echo none)"
 }
 
 apply_ahb(){
 	[ "${WITH_AHB:-0}" = 1 ] || { log "banner_ahb_wsi: not requested"; return 0; }
-	[ -n "$BANNERS_TURNIP_DIR" ] || die "WITH_AHB=1 needs BANNERS_TURNIP_DIR"
-	log "applying banner_ahb_wsi.py"
-	python3 "$BANNERS_TURNIP_DIR/patches/wayland/banner_ahb_wsi.py" "$repo" || die "banner_ahb_wsi.py did not apply"
+	# Mesa 24.2 port of Banners-Turnip patches/wayland/banner_ahb_wsi.py (same helpers, this tree's
+	# anchors); the protocol glue sits next to it.
+	log "applying banner/ahb/banner_ahb_wsi_mesa242.py"
+	python3 "$repo/banner/ahb/banner_ahb_wsi_mesa242.py" "$repo" || die "banner_ahb_wsi_mesa242.py did not apply"
 }
 
 configure_build(){
@@ -208,9 +210,9 @@ package_check(){
 	log "NEEDED: $needed"
 	log "SONAME: $(echo "$dyn" | grep -oP 'SONAME.*\[\K[^]]+')"
 	log "RUNPATH: $(echo "$dyn" | grep -E 'RUNPATH|RPATH' || echo none)"
-	echo "$dyn" | grep -q 'SONAME.*\[libvulkan_wrapper.so\]' || die "SONAME is not libvulkan_wrapper.so"
+	grep -q 'SONAME.*\[libvulkan_wrapper.so\]' <<< "$dyn" || die "SONAME is not libvulkan_wrapper.so"
 	for s in vk_icdGetInstanceProcAddr vk_icdNegotiateLoaderICDInterfaceVersion vk_icdGetPhysicalDeviceProcAddr; do
-		echo "$syms" | grep -qE "FUNC +GLOBAL +DEFAULT +[0-9]+ $s\$" || die "$s not exported"
+		grep -qE "FUNC +GLOBAL +DEFAULT +[0-9]+ $s\$" <<< "$syms" || die "$s not exported"
 	done
 	# Every NEEDED lib must exist where the guest looks: imagefs/usr/lib (list taken from the device
 	# 2026-09-28), the Android system libs, or libwayland-client.so from the Proton wcp's lib/ (which
@@ -221,12 +223,12 @@ package_check(){
 		libz.so libzstd.so libwayland-client.so libffi.so"
 	local n
 	for n in $needed; do
-		echo " $ok " | tr -s ' \t\n' ' ' | grep -q " $n " || die "NEEDED $n is not in imagefs/usr/lib, the system, or the Proton lib/"
+		grep -q " $n " <<< " $(echo $ok) " || die "NEEDED $n is not in imagefs/usr/lib, the system, or the Proton lib/"
 	done
-	echo " $needed " | grep -q ' libwayland-client.so ' || die "no NEEDED libwayland-client.so: the Wayland WSI is not in"
-	echo " $needed " | grep -q ' libadrenotools.so ' || die "no NEEDED libadrenotools.so"
-	echo " $needed " | grep -q ' libc++_shared.so ' && die "libc++_shared.so is NEEDED (expected static libc++)"
-	echo "$syms" | grep -q ' UND .*adrenotools_open_libvulkan' || die "adrenotools_open_libvulkan not imported"
+	grep -q ' libwayland-client.so ' <<< " $needed " || die "no NEEDED libwayland-client.so: the Wayland WSI is not in"
+	grep -q ' libadrenotools.so ' <<< " $needed " || die "no NEEDED libadrenotools.so"
+	grep -q ' libc++_shared.so ' <<< " $needed " && die "libc++_shared.so is NEEDED (expected static libc++)"
+	grep -q ' UND .*adrenotools_open_libvulkan' <<< "$syms" || die "adrenotools_open_libvulkan not imported"
 	local wl; wl="$(echo "$syms" | grep -c ' UND .*wl_' || true)"
 	[ "$wl" -gt 10 ] || die "only $wl wl_* imports: the Wayland WSI is not in"
 	grep -q "VK_KHR_wayland_surface" "$so" || die "VK_KHR_wayland_surface string missing"
@@ -236,10 +238,10 @@ package_check(){
 	local sym
 	for sym in wl_display_dispatch_queue_timeout wl_display_create_queue_with_name wl_fixes_interface \
 	           wl_proxy_get_queue wl_event_queue_get_name; do
-		echo "$syms" | grep -qE " UND +$sym\$" && die "imports $sym: will not load against an older libwayland-client"
+		grep -qE " UND +$sym\$" <<< "$syms" && die "imports $sym: will not load against an older libwayland-client"
 	done
 	# The fallbacks must not leak out of the .so either.
-	echo "$syms" | grep -vE ' UND ' | grep -qE ' (wl_display_dispatch_queue_timeout|wl_display_create_queue_with_name)$' \
+	grep -vE ' UND ' <<< "$syms" | grep -E ' (wl_display_dispatch_queue_timeout|wl_display_create_queue_with_name)$' >/dev/null \
 		&& die "exports a libwayland symbol (fallback not hidden)"
 	echo "$syms" | grep -E ' UND .*wl_' | awk '{print $NF}' | sort > "$out/wl-imports.txt"
 	echo "$syms" | grep -vE ' UND ' | grep -E 'FUNC|OBJECT' | grep GLOBAL | awk '{print $NF}' | sort > "$out/exports.txt"

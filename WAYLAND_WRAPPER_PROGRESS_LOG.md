@@ -24,3 +24,11 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   but not `log` (`__android_log_print` undefined). SPIRV-Tools static libs built fine (committed
   headers match the fork). Fix: `-DCMAKE_SHARED_LINKER_FLAGS=-llog`.
 - Run 2: started.
+- Run 2 `36472278631` (00f1753): FAILURE in the build script's own check, not the build:
+  `readelf | grep -q` under `pipefail` (grep -q exits early, readelf takes SIGPIPE). libadrenotools
+  linked fine. Fix: every `| grep -q` check now reads a here-string.
+- Added the `ahb` matrix leg: `banner/ahb/banner_ahb_wsi_mesa242.py` = Banners-Turnip
+  `patches/wayland/banner_ahb_wsi.py` @ 0a6846d with this Mesa's anchors (helpers unchanged; no
+  color-management / loader_wayland_wrap_buffer here, unbraced `continue` in the format loops).
+  Dry-applied cleanly to the tree; compile untested until CI. `plain` stays the primary deliverable.
+- Run 3: started.

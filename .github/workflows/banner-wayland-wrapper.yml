@@ -16,6 +16,11 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # plain = Mesa's Wayland WSI as is; ahb = plus banner_ahb_v1 zero-copy (banner/ahb/)
+        variant: [plain, ahb]
     steps:
       - uses: actions/checkout@v4
 
@@ -30,17 +35,19 @@ jobs:
       - name: Build
         env:
           OUT_DIR: ${{ github.workspace }}/_out
+          WITH_AHB: ${{ matrix.variant == 'ahb' && '1' || '0' }}
         run: bash banner/build_wayland_wrapper.sh
 
       - name: Test package (Wayland game driver zip)
         run: |
           sha=$(git rev-parse --short HEAD)
+          tag=$([ "${{ matrix.variant }}" = ahb ] && echo "Wrapper-Wayland-AHB-TEST" || echo "Wrapper-Wayland-TEST")
           mkdir -p _pkg
           cp _out/libvulkan_wrapper.so _pkg/libvulkan_freedreno.so
           cat > _pkg/meta.json <<JSON
           {
             "schemaVersion": 1,
-            "name": "Wrapper-Wayland-TEST-${sha}",
+            "name": "${tag}-${sha}",
             "description": "TEST: leegao bionic Vulkan wrapper built with the X11 + Wayland WSI, renamed so the Wayland game-driver importer takes it. The real driver underneath is the container's AdrenoTools pick (ADRENOTOOLS_DRIVER_PATH/NAME).",
             "author": "The412Banner",
             "packageVersion": "1",
@@ -48,11 +55,11 @@ jobs:
             "driverVersion": "wrapper ${sha}"
           }
           JSON
-          (cd _pkg && zip -q -X "../_out/Wrapper-Wayland-TEST-${sha}.zip" libvulkan_freedreno.so meta.json)
+          (cd _pkg && zip -q -X "../_out/${tag}-${sha}.zip" libvulkan_freedreno.so meta.json)
           (cd _out && sha256sum *.zip libvulkan_wrapper.so)
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wrapper-wayland-${{ github.sha }}
+          name: wrapper-wayland-${{ matrix.variant }}-${{ github.sha }}
           path: _out/
           if-no-files-found: error
