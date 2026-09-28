@@ -19,8 +19,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # plain = Mesa's Wayland WSI as is; ahb = plus banner_ahb_v1 zero-copy (banner/ahb/)
-        variant: [plain, ahb]
+        # pipetto = Pipetto-crypto/mesa wrapper-25, the lineage Bannerlator ships in imagefs;
+        # plain / ahb = this tree (leegao), Mesa's Wayland WSI as is / plus banner_ahb_v1 zero-copy.
+        variant: [pipetto, plain, ahb]
     steps:
       - uses: actions/checkout@v4
 
@@ -36,19 +37,24 @@ jobs:
         env:
           OUT_DIR: ${{ github.workspace }}/_out
           WITH_AHB: ${{ matrix.variant == 'ahb' && '1' || '0' }}
+          SOURCE: ${{ matrix.variant == 'pipetto' && 'pipetto' || 'leegao' }}
         run: bash banner/build_wayland_wrapper.sh
 
       - name: Test package (Wayland game driver zip)
         run: |
           sha=$(git rev-parse --short HEAD)
-          tag=$([ "${{ matrix.variant }}" = ahb ] && echo "Wrapper-Wayland-AHB-TEST" || echo "Wrapper-Wayland-TEST")
+          case "${{ matrix.variant }}" in
+            ahb) tag=Wrapper-Wayland-AHB-TEST ;;
+            pipetto) tag=Wrapper-Pipetto-Wayland-TEST ;;
+            *) tag=Wrapper-Wayland-TEST ;;
+          esac
           mkdir -p _pkg
           cp _out/libvulkan_wrapper.so _pkg/libvulkan_freedreno.so
           cat > _pkg/meta.json <<JSON
           {
             "schemaVersion": 1,
             "name": "${tag}-${sha}",
-            "description": "TEST: leegao bionic Vulkan wrapper built with the X11 + Wayland WSI, renamed so the Wayland game-driver importer takes it. The real driver underneath is the container's AdrenoTools pick (ADRENOTOOLS_DRIVER_PATH/NAME).",
+            "description": "TEST: bionic Vulkan wrapper (${{ matrix.variant }} source) built with the X11 + Wayland WSI, renamed so the Wayland game-driver importer takes it. The real driver underneath is the container's AdrenoTools pick (ADRENOTOOLS_DRIVER_PATH/NAME).",
             "author": "The412Banner",
             "packageVersion": "1",
             "vendor": "Mesa",

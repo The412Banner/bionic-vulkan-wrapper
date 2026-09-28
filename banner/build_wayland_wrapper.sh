@@ -53,6 +53,14 @@ sysroot="$work/termux"
 tprefix="$sysroot/data/data/com.termux/files/usr"
 build="$work/build"
 
+# SOURCE=leegao (default): this repository (leegao/bionic-vulkan-wrapper, Mesa 24.2).
+# SOURCE=pipetto: Pipetto-crypto/mesa wrapper-25 (Mesa 25.0) -- the lineage of the libvulkan_wrapper.so
+# Bannerlator actually ships in imagefs (its strings: "Wrapper(%s)", spirv_patcher.cpp,
+# wsi_common_android.c, WRAPPER_SAFE_CREATE_DEVICE / WRAPPER_DMAHEAP_CACHED). libadrenotools comes
+# from its own meson subproject there.
+SOURCE="${SOURCE:-leegao}"
+PIPETTO_REF="${PIPETTO_REF:-ecdd0da8c47b67892b0077130a0152ba924919cb}"   # wrapper-25, 2026-09-17
+mesa="$repo"; [ "$SOURCE" = pipetto ] && mesa="$work/pipetto"
 SPIRV_TOOLS_REF="${SPIRV_TOOLS_REF:-9113deed32ba366b765a148f474ca86c3890db6a}"      # leegao/SPIRV-Tools main
 SPIRV_HEADERS_REF="${SPIRV_HEADERS_REF:-97e96f9e9defeb4bba3cfbd034dec516671dd7a3}"  # its DEPS pin
 ADRENOTOOLS_REF="${ADRENOTOOLS_REF:-master}"                                        # leegao/libadrenotools
@@ -139,6 +147,31 @@ build_adrenotools(){
 	log "libadrenotools SONAME: $("$ndk/llvm-readelf" -d "$work/adrenotools-lib/libadrenotools.so" | grep SONAME || echo none)"
 }
 
+fetch_pipetto(){
+	log "Pipetto-crypto/mesa @ $PIPETTO_REF"
+	clone_at https://github.com/Pipetto-crypto/mesa.git "$mesa" "$PIPETTO_REF"
+	[ "$(git -C "$mesa" rev-parse HEAD)" = "$PIPETTO_REF" ] || die "Pipetto checkout is not $PIPETTO_REF"
+	# The same two source changes this repository carries in-tree (see its meson.build and
+	# src/util/detect_os.h), applied to the Pipetto tree with asserted anchors.
+	python3 - "$mesa" <<'PY2' || die "Pipetto source patches failed"
+import sys, os
+root = sys.argv[1]
+def patch(rel, old, new):
+    p = os.path.join(root, rel); s = open(p).read()
+    assert s.count(old) == 1, (rel, old[:60]); open(p, 'w').write(s.replace(old, new))
+for d in ("wl_display_dispatch_queue_timeout", "wl_display_create_queue_with_name"):
+    define = "HAVE_WL_DISPATCH_QUEUE_TIMEOUT" if "timeout" in d else "HAVE_WL_CREATE_QUEUE_WITH_NAME"
+    patch("meson.build",
+          "  if cc.has_function(\n      '%s',\n      prefix : '#include <wayland-client.h>',\n"
+          "      dependencies: dep_wayland_client)\n    pre_args += ['-D%s']\n  endif\n" % (d, define),
+          "  message('wayland: %s left off (old-libwayland compat)')\n" % define)
+patch("src/util/detect_os.h", "#if defined(__ANDROID__)\n#define DETECT_OS_ANDROID 1\n#endif\n",
+      "/* Bannerlator: not the Android platform on a -D__TERMUX__ build (Termux mesa 0000-disable-android-detection). */\n"
+      "#if defined(__ANDROID__) && !defined(__TERMUX__)\n#define DETECT_OS_ANDROID 1\n#endif\n")
+print("pipetto: old-libwayland compat + Android detection off applied")
+PY2
+}
+
 apply_ahb(){
 	[ "${WITH_AHB:-0}" = 1 ] || { log "banner_ahb_wsi: not requested"; return 0; }
 	# Mesa 24.2 port of Banners-Turnip patches/wayland/banner_ahb_wsi.py (same helpers, this tree's
@@ -148,7 +181,7 @@ apply_ahb(){
 }
 
 configure_build(){
-	cd "$repo"
+	cd "$mesa"
 	command -v glslangValidator >/dev/null || die "glslangValidator missing"
 	pkg-config --exists wayland-scanner || die "native wayland-scanner.pc missing (apt libwayland-dev)"
 	log "native wayland-scanner $(pkg-config --modversion wayland-scanner)"
@@ -161,6 +194,14 @@ configure_build(){
 	local defs="-D__TERMUX__ -D__USE_GNU -D__ANDROID__ -fno-emulated-tls"
 	local warn="-Wno-error -Wno-deprecated-declarations -Wno-incompatible-pointer-types -Wno-incompatible-pointer-types-discards-qualifiers -Wno-int-conversion"
 	local libs="-L$tprefix/lib -L$work/adrenotools-lib -landroid-shmem -ladrenotools"
+	local extra_opts="-Dcpp_rtti=false"
+	if [ "$SOURCE" = pipetto ]; then
+		# libadrenotools = the tree's own meson subproject. Termux's headers used to pull <fcntl.h> in;
+		# force it rather than patch each file.
+		libs="-L$tprefix/lib -landroid-shmem"
+		defs="$defs -include fcntl.h"
+		extra_opts=""
+	fi
 	# zlib = the NDK's (SONAME libz.so, a public system library), not Termux's libz.so.1.
 	mkdir -p "$work/pc"
 	cat > "$work/pc/zlib.pc" <<'PC'
@@ -208,7 +249,7 @@ EOF
 	meson setup "$build" --cross-file "$work/cross.txt" --native-file "$work/native.txt" \
 		--prefix /usr --libdir lib --buildtype=release \
 		-Db_ndebug=true -Dstrip=true \
-		-Dcpp_rtti=false -Dgbm=disabled -Dopengl=false -Dllvm=disabled -Dshared-llvm=disabled \
+		$extra_opts -Dgbm=disabled -Dopengl=false -Dllvm=disabled -Dshared-llvm=disabled \
 		-Dplatforms=x11,wayland -Dgallium-drivers= -Dxmlconfig=disabled -Dvulkan-drivers=wrapper \
 		-Dzstd=disabled \
 		|| { cat "$build/meson-logs/meson-log.txt" | tail -80; die "meson setup failed"; }
@@ -216,7 +257,7 @@ EOF
 	# Who references memfd_create (diagnostic only)?
 	local a
 	shopt -s globstar nullglob
-	for a in "$build"/**/*.a "$repo"/src/vulkan/wrapper/lib/*.a; do
+	for a in "$build"/**/*.a "$mesa"/src/vulkan/wrapper/lib/*.a; do
 		"$ndk/llvm-nm" -A "$a" 2>/dev/null | grep -E ' U memfd_create$' || true
 	done
 	shopt -u globstar nullglob
@@ -305,9 +346,14 @@ EOF
 }
 
 prepare
-build_spirv_tools
-build_adrenotools
-apply_ahb
+if [ "$SOURCE" = pipetto ]; then
+	fetch_pipetto
+	[ "${WITH_AHB:-0}" = 1 ] && die "WITH_AHB is only ported to the leegao tree"
+else
+	build_spirv_tools
+	build_adrenotools
+	apply_ahb
+fi
 configure_build
 package_check
 log "done: $out/libvulkan_wrapper.so"

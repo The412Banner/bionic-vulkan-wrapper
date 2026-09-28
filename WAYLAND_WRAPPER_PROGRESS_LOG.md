@@ -85,3 +85,26 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   - Wrapper-Wayland-da89209-raw/ (libvulkan_wrapper.so dd5b7c4e..., libvulkan_wrapper-ahb.so 70462c1f...,
     wrapper_icd.aarch64.json)
 - Device status: CI-green only, NOT device-tested.
+
+## 2026-09-28 (later) -- device test of da89209 (plain)
+
+- Coordinator's device test (Pocket FIT, Adreno 750; DiRT Showdown, Force Wayland, AdrenoTools
+  "Mesa Turnip v26.3.0-20260830-r4", Proton 11.0-2.1-arm64ec-16): black screen, exit after ~0.7 s.
+  The wrapper loaded, AdrenoTools loaded the Turnip, DXVK 2.4.1 enumerated "Adreno (TM) 750",
+  then `vkCreateDevice Exception 0xc0000005 in Unix call`. 0 GPU frames reached the compositor.
+- Key finding: the X11 wrapper Bannerlator SHIPS (imagefs usr/lib/libvulkan_wrapper.so) is NOT
+  leegao's wrapper. Its strings ("Wrapper(%s)" device-name prefix, ../src/vulkan/wsi/wsi_common_android.c,
+  ../src/vulkan/wrapper/spirv_patcher.cpp, WRAPPER_SAFE_CREATE_DEVICE, WRAPPER_DMAHEAP_CACHED,
+  WRAPPER_DRIVER_ID) match Pipetto-crypto/mesa branch wrapper-25 (Mesa 25.0; GameNative/mesa is a
+  fork of it). leegao's tree has none of those strings and prints the "non-dxvk game engines"
+  warning seen in the device log -- so da89209 was a different wrapper than the one that runs this
+  game on X11. That is also why DXVK showed no "Wrapper(" prefix.
+- The leegao vkCreateDevice fault itself is not root-caused (no unix backtrace yet). Candidate spots
+  in leegao's WRAPPER_CreateDevice: the BCn InterceptorState_Init compute pipelines it builds inside
+  vkCreateDevice (Pipetto has none), and the extension list it forces onto the Turnip
+  (wrapper_append_required_extensions).
+- New: SOURCE=pipetto mode in banner/build_wayland_wrapper.sh + a `pipetto` matrix leg: clones
+  Pipetto-crypto/mesa @ ecdd0da (wrapper-25), applies the same two changes (old-libwayland compat,
+  Android detection off under __TERMUX__), -include fcntl.h, libadrenotools from its own subproject,
+  same checks. leegao legs kept for reference.
+- Run 10: started.
