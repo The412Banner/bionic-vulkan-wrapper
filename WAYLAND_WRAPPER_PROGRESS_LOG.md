@@ -39,3 +39,6 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   wl_display (vkGetPhysicalDeviceWaylandPresentationSupportKHR). The ahb leg's
   wsi_common_wayland.c and banner-ahb-v1-protocol.c COMPILED.
 - Run 4: started.
+- Run 4 `36473622149` (9962585): FAILURE, same class: wrapper_physical_device.c calls open()/O_RDONLY
+  without <fcntl.h> (the only other wrapper file doing so). Fixed.
+- Run 5: started.

@@ -1,3 +1,4 @@
+#include <fcntl.h>
 #include <math.h>
 
 #include "wrapper_private.h"
