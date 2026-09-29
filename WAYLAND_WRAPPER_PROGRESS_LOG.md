@@ -204,3 +204,4 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   Dry-applied to both trees (Pipetto ecdd0da and this leegao tree). Build check: the AHB .so must carry the new
   log string + the env name. pipetto-ahb package renamed Wrapper-Wayland-PIPETTO-AHB-TSAFE-TEST-<sha>.
 - Run 16 `36508286968` (333fa5d, headSha verified): started.
+- Run 16 `36508286968` (333fa5d): SUCCESS on all four legs; pipetto-ahb log: "tear-safe acquire (dma-buf fences) + acquire order + extra images: in". STAGED /sdcard/Download/Wayland/Wrapper-Wayland-PIPETTO-AHB-TSAFE-TEST-333fa5d.zip sha256 8f4a6a7ba8689dfc32e1efb564756e21acc9b6b783ba31bcb5e80c2cc692c04b (.so f752e895…); installed as imported:Wrapper-Wayland-PIPETTO-AHB-TSAFE-333fa5d.
