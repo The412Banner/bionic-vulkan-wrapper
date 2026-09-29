@@ -261,3 +261,18 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   logged; tear-safe acquire line present.
 - D3D12 demo (D3D12_x64.exe, 800x600 window, copy path): Wayland 614 fps (bundled f752e895) -> 4335 fps (title; compositor
   34.5k-40.4k GPU frames / 10 s), GPU 86 %, picture correct and animating. X11 reference 809.
+- Controls (same session): D3D12 demo on the new build with BANNER_KGSL_POLL_FIX=0: 466 fps (title; compositor 558-596
+  frames/s) = back to the old cap -> the fix is the cause. D3D12 demo X11 (imagefs wrapper, untouched): 804-810.
+- D3D12HelloTriangle: Wayland bundled adapter 577 -> fixed 1040 (compositor ~1178 frames/s); X11 264.
+- AIO --sweep 15, Wayland zero-copy, before (bundled f752e895) -> after (3af78e4):
+  Vk 538 -> 533 | GL 267 -> 262 | D12 386 -> 386 | D11 3323 -> 3402 | D10 331 -> 325 | D9 268 -> 268 | D8 271 -> 271 | DDraw 236 -> 238
+  (all within run noise; no regression). After-run: "banner-ahb: 1280x720 swapchain (7 images) on gralloc buffers: UBWC",
+  tear-safe acquire line, display-held class seen once and waited for, compositor 1398-1440 zero-copy frames / 10 s.
+- The AIO D3D12 (386 vs X11 ~410) and D3D10 (325-331 vs X11 ~381) gaps are NOT this cause: the fix leaves them unchanged
+  (those scenes keep the GPU busy, so the CPU-side serialization never showed). Separate investigation.
+- STAGED /sdcard/Download/Wayland/Wrapper-Wayland-D12FIX-TEST-3af78e4.zip sha256 e674de0192793587e901d68bfc5081e3cfa95b3db496d07413623846e6ae403d
+  (= run 18 pipetto-ahb zip; .so c3533274b24092298fff484869fa853309584f4053ca8c1249afee7ff1cc9cdd; meta name still
+  Wrapper-Wayland-PIPETTO-AHB-TSAFE-TEST-3af78e4). App swap (not done): app/src/main/assets/wayland/adapter/libvulkan_wrapper.so
+  on feat/linux-gamescope-runtime <- run 18 pipetto-ahb libvulkan_wrapper.so.
+- Proper upstream fix belongs in Turnip (tu_knl_kgsl.cc): wait_timestamp_safe() / kgsl_syncobj_wait() must not send
+  timeout 0 to KGSL; read the retired timestamp instead. It hits the X11 path too (imagefs wrapper, same Turnip).
