@@ -203,3 +203,4 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   3. +2 images for gralloc MAILBOX / IMMEDIATE chains (BANNER_WSI_AHB_EXTRA_IMAGES=0..4).
   Dry-applied to both trees (Pipetto ecdd0da and this leegao tree). Build check: the AHB .so must carry the new
   log string + the env name. pipetto-ahb package renamed Wrapper-Wayland-PIPETTO-AHB-TSAFE-TEST-<sha>.
+- Run 16 `36508286968` (333fa5d, headSha verified): started.
