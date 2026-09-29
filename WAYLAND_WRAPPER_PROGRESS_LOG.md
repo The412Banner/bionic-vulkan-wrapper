@@ -252,3 +252,4 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   Logs "wrapper-kgsl: zero-timeout poll fix on (...)" and the first converted wait. Build check: strings + dl_iterate_phdr import.
 - Run 17 `36563471441` (1872e25, headSha verified): started.
 - Run 17 `36563471441` (1872e25): pipetto legs FAILED on the new build check only (dl_iterate_phdr is imported as dl_iterate_phdr@LIBC; the regex wanted an unversioned name). plain/ahb green. Regex fixed.
+- Run 18 `36564137071` (3af78e4, headSha verified): SUCCESS on all four legs; pipetto-ahb: "KGSL zero-timeout poll fix: in" + tear-safe checks in. pipetto-ahb .so c3533274…, zip e674de01….
