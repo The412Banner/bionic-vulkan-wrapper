@@ -205,3 +205,23 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   log string + the env name. pipetto-ahb package renamed Wrapper-Wayland-PIPETTO-AHB-TSAFE-TEST-<sha>.
 - Run 16 `36508286968` (333fa5d, headSha verified): started.
 - Run 16 `36508286968` (333fa5d): SUCCESS on all four legs; pipetto-ahb log: "tear-safe acquire (dma-buf fences) + acquire order + extra images: in". STAGED /sdcard/Download/Wayland/Wrapper-Wayland-PIPETTO-AHB-TSAFE-TEST-333fa5d.zip sha256 8f4a6a7ba8689dfc32e1efb564756e21acc9b6b783ba31bcb5e80c2cc692c04b (.so f752e895…); installed as imported:Wrapper-Wayland-PIPETTO-AHB-TSAFE-333fa5d.
+
+## 2026-09-28 21:45 -- DEVICE-PROVEN: tear-safe zero-copy wrapper (333fa5d), Pocket FIT, AIO --sweep 15, uncapped mailbox
+
+| AIO avg fps | Vk | GL | D12 | D11 | D10 | D9 | D8 | DDraw |
+|---|---|---|---|---|---|---|---|---|
+| TSAFE 333fa5d, zc on  | 522 | 265 | 375 | 3438 | 358 | 242 | 241 | 238 |
+| TSAFE 333fa5d, zc off | 499 | 240 | 386 | 3307 | 357 | 241 | 241 | 228 |
+| old AHB 24acc19, zc on (no fence wait) | 527 | 266 | 371 | 3679 | 358 | - | - | - |
+| native Turnip ZCFIX f7ac07e, zc on | 541 | 269 | 378 | 3658 | 355 | 241 | 242 | 239 |
+
+- wine_debug.log: "wrapper-wsi: acquire waits on the dma-buf's fences (sync_file into the program's semaphore /
+  fence, SYNC_FD temporary import)" (no refusal / no-ioctl lines), "banner-ahb: 1280x720 swapchain (7 images) on
+  gralloc buffers: UBWC", and once "banner-ahb: every free image is still held by the display: the acquire waits
+  for it (7 images)" -- the display-fenced class is seen and waited for.
+- Compositor: "AHB swapchain (7 images ... UBWC)", "presenting window 0x10084 ... without a copy", ~1200 zero-copy
+  frames / 10 s. Screenshots (slots 1/3/4) clean.
+- zc off: copy path ("dma-buf: copied into the screen swapchain"), 5-image chains (no bump), fence wait active,
+  numbers level with the old plain build (p1: Vk 562 / D11 3411, within run noise).
+- Nit: the +2 images also go to a chain created while zero-copy is on whose format has no gralloc equivalent
+  (BGRA vkformat 44 -> 6 images, standard buffers). Harmless; the same holds for Banners-Turnip's patch.
