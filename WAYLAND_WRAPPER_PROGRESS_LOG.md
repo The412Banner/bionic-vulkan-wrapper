@@ -253,3 +253,11 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
 - Run 17 `36563471441` (1872e25, headSha verified): started.
 - Run 17 `36563471441` (1872e25): pipetto legs FAILED on the new build check only (dl_iterate_phdr is imported as dl_iterate_phdr@LIBC; the regex wanted an unversioned name). plain/ahb green. Regex fixed.
 - Run 18 `36564137071` (3af78e4, headSha verified): SUCCESS on all four legs; pipetto-ahb: "KGSL zero-timeout poll fix: in" + tear-safe checks in. pipetto-ahb .so c3533274…, zip e674de01….
+
+## 2026-09-29 08:00 -- DEVICE: D3D12 demo on the KGSL-poll-fix adapter (3af78e4), Pocket FIT, container 3, uncapped
+
+- Installed as imported:Wrapper-Wayland-D12FIX-3af78e4 (.so c3533274…). wine_debug.log: "wrapper-kgsl: zero-timeout poll
+  fix on (.../adrenotools/Mesa Turnip v26.3.0-20260929-r2/libvulkan_freedreno.so: 1 ioctl slot)", first converted wait
+  logged; tear-safe acquire line present.
+- D3D12 demo (D3D12_x64.exe, 800x600 window, copy path): Wayland 614 fps (bundled f752e895) -> 4335 fps (title; compositor
+  34.5k-40.4k GPU frames / 10 s), GPU 86 %, picture correct and animating. X11 reference 809.
