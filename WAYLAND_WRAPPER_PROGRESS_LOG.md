@@ -225,3 +225,28 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   numbers level with the old plain build (p1: Vk 562 / D11 3411, within run noise).
 - Nit: the +2 images also go to a chain created while zero-copy is on whose format has no gralloc equivalent
   (BGRA vkformat 44 -> 6 images, standard buffers). Harmless; the same holds for Banners-Turnip's patch.
+
+## 2026-09-29 08:10 -- D3D12 (vkd3d-proton) capped at ~614 fps on Wayland: root cause = KGSL zero-timeout "poll" blocks
+
+- Symptom (device, Pocket FIT, container 3, uncapped): D3D12 demo X11 809 fps / GPU 86 % vs Wayland 614 / 77 %;
+  D3D12HelloTriangle Wayland 597. None of latency frames / present wait / zero-copy / extra images / maxFrameLatency moved it.
+- Profile: simpleperf --trace-offcpu -e cpu-clock --call-graph fp (fp unwinds through the stripped Turnip, dwarf did not);
+  /sdcard/Download/perf-harness/demo-results/{wl3,x3}*. Wayland: the vkd3d_queue thread spends 91 % of its time inside
+  the driver's vkQueueSubmit2 (wrapper_QueueSubmit2 -> libvulkan_freedreno +a2bd32 -> +a2bf08), 63 % on mtx_lock and
+  25 % in kgsl_ioctl_device_waittimestamp_ctxtid -> adreno_drawctxt_wait (sleeping). X11 has the same shape, milder
+  (74 % / 41 % / 31 %). The swapchain thread is 79 % idle (futex); it is not the bottleneck.
+- Disassembly of Turnip v26.3.0-20260929-r2: +a2bf08 = vk_sync_timeline_alloc_point(): mtx_lock(state->mutex) then
+  bl +a2c93c(device, state, drain=false) = vk_sync_timeline_gc_locked(), which polls every pending point with
+  vk_sync_wait(abs_timeout 0). Turnip KGSL: kgsl_syncobj_wait() -> wait_timestamp_safe() -> get_relative_ms(0) = 0 ->
+  IOCTL_KGSL_DEVICE_WAITTIMESTAMP_CTXTID (0x400c0907, +9ea920) with timeout 0, and KGSL treats timeout 0 as "wait
+  forever" (adreno_drawctxt_wait; kgsl_add_event + schedule_timeout in the stacks). So the "poll" sleeps until the oldest
+  pending timeline point retires, with the timeline mutex held; vkd3d signals timelines on every submit and its fence
+  thread takes the same mutex: CPU and GPU never overlap. Not a WSI / present issue; it is in the driver underneath and
+  hits X11 too (less, there the GPU completes sooner), which is why the gap is D3D12-specific (DXVK hides it).
+- Fix in the adapter (Turnip itself untouched; the X11 imagefs wrapper untouched): banner/kgsl/banner_kgsl_poll.h,
+  applied to the Pipetto tree by build_wayland_wrapper.sh apply_kgsl_poll_fix(). When the physical device reports
+  VK_DRIVER_ID_MESA_TURNIP, the wrapper finds the loaded driver (dl_iterate_phdr, ADRENOTOOLS_DRIVER_NAME, itself
+  excluded) and points its ioctl GOT slot(s) at a shim that answers only WAITTIMESTAMP_CTXTID with timeout 0 via
+  IOCTL_KGSL_CMDSTREAM_READTIMESTAMP_CTXTID (RETIRED) + wrap-safe compare (0 / -1 ETIMEDOUT = VK_TIMEOUT, what the
+  caller asked for). Everything else goes to the previous target (libfakeinput's ioctl). BANNER_KGSL_POLL_FIX=0 = off.
+  Logs "wrapper-kgsl: zero-timeout poll fix on (...)" and the first converted wait. Build check: strings + dl_iterate_phdr import.

@@ -210,6 +210,31 @@ patch("src/vulkan/wsi/wsi_common_wayland.c",
       "   chain->present_ids.valid_refresh_nsec = false;\n")
 print("pipetto: explicit modifiers + per-swapchain log applied")
 PY2
+	apply_kgsl_poll_fix
+}
+
+# Zero-timeout KGSL timestamp waits as real polls (banner/kgsl/banner_kgsl_poll.h has the why): the
+# header goes next to the wrapper sources, and the wrapper points the Turnip driver's ioctl GOT slot at
+# it once the physical device says the driver is Turnip.
+apply_kgsl_poll_fix(){
+	cp "$repo/banner/kgsl/banner_kgsl_poll.h" "$mesa/src/vulkan/wrapper/banner_kgsl_poll.h"
+	python3 - "$mesa" <<'PY3' || die "KGSL poll fix patch failed"
+import sys, os
+root = sys.argv[1]
+def patch(rel, old, new):
+    p = os.path.join(root, rel); s = open(p).read()
+    assert s.count(old) == 1, (rel, old[:60]); open(p, 'w').write(s.replace(old, new))
+patch("src/vulkan/wrapper/wrapper_physical_device.c", "#include <math.h>\n",
+      "#include <math.h>\n#include \"banner_kgsl_poll.h\"\n")
+patch("src/vulkan/wrapper/wrapper_physical_device.c",
+      "      pdevice->dispatch_table.GetPhysicalDeviceProperties2(\n"
+      "         pdevice->dispatch_handle, &pdevice->properties2);\n",
+      "      pdevice->dispatch_table.GetPhysicalDeviceProperties2(\n"
+      "         pdevice->dispatch_handle, &pdevice->properties2);\n"
+      "      if (pdevice->driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP)\n"
+      "         banner_kgsl_poll_fix(); /* Bannerlator: KGSL zero-timeout waits = polls */\n")
+print("pipetto: KGSL zero-timeout poll fix applied")
+PY3
 }
 
 apply_ahb(){
@@ -391,6 +416,12 @@ package_check(){
 	echo "$syms" | grep -vE ' UND ' | grep -E 'FUNC|OBJECT' | grep GLOBAL | awk '{print $NF}' | sort > "$out/exports.txt"
 	log "$wl wl_* imports: $(tr '\n' ' ' < "$out/wl-imports.txt")"
 	log "exports: $(tr '\n' ' ' < "$out/exports.txt")"
+	if [ "$SOURCE" = pipetto ]; then
+		grep -q "wrapper-kgsl: zero-timeout poll fix" "$so" || fail "KGSL zero-timeout poll fix missing"
+		grep -q "BANNER_KGSL_POLL_FIX" "$so" || fail "BANNER_KGSL_POLL_FIX switch missing"
+		grep -qE ' UND +dl_iterate_phdr$' <<< "$syms" || fail "dl_iterate_phdr not imported (KGSL poll fix not linked in?)"
+		log "KGSL zero-timeout poll fix: in"
+	fi
 	if [ "${WITH_AHB:-0}" = 1 ]; then
 		grep -q banner_ahb_v1 "$so" || fail "banner_ahb_v1 missing (zero-copy patch not in)"
 		log "banner_ahb_v1: in"
