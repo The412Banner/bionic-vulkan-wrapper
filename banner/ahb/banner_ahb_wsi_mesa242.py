@@ -21,6 +21,30 @@ render fence is already in the dma-buf before wl_surface.commit, the compositor 
 layer's acquire fence, and imports the display's release fence back before wl_buffer.release, so
 the WSI's existing acquire path (wsi_create_sync_for_dma_buf_wait) waits on it.
 
+The wrapper, though, never waited for it: its physical device has no vk_sync types
+(supported_sync_types == NULL), so wsi_signal_semaphore_for_image / wsi_signal_fence_for_image
+imported fd -1 ("already signalled") into the program's semaphore / fence, and the game could render
+into a buffer the display was still scanning out. The acquire semaphore and fence handles here are
+the real driver's, so on a Wayland dma-buf chain (implicit sync) those two now export the dma-buf's
+fences (DMA_BUF_IOCTL_EXPORT_SYNC_FILE, RW = every fence) and import that sync_file instead, through
+the same driver vkImportSemaphoreFdKHR / vkImportFenceFdKHR (SYNC_FD, temporary). The flag that turns
+this on (wsi_swapchain.banner_wait_dma_buf) is only ever set by the Wayland WSI below, so X11
+swapchains (AHardwareBuffer presentation) behave exactly as before. BANNER_WSI_NO_DMABUF_WAIT=1 turns
+it off. A kernel without the ioctl, or a driver refusing the import, falls back to fd -1 (logged once).
+
+Acquire order (Banners-Turnip's zero-copy fps-ceiling fix, same code). Once the acquire waits for the
+display's release fence, handing out the lowest-numbered free image -- Mesa's order -- takes a buffer
+just back from the layer while others sit idle, and the GPU queue stalls on the display once per
+refresh. For a gralloc chain the acquire polls each free image's dma-buf (poll timeout 0: POLLOUT =
+every fence signalled, POLLIN = the writers, i.e. our own render, are done; POLLIN without POLLOUT =
+waiting only on the display's read fence) and takes an idle image, then one waiting only on our own
+rendering, then a display-held one. Every fence is still waited for.
+
+Image count. The layer can hold three buffers at once (on screen, queued, released with a pending
+fence), so a MAILBOX / IMMEDIATE swapchain created while the compositor wants gralloc images gets
+BANNER_AHB_EXTRA_IMAGES (2) more images; BANNER_WSI_AHB_EXTRA_IMAGES=0..4 overrides that. FIFO is
+left alone.
+
 Who decides, and when:
 
   * banner_ahb_v1 version 2 (the compositor sends `mode`, which it does right after bind and again
@@ -109,6 +133,7 @@ helpers = r'''
  * few NDK types used are declared here (they are stable ABI).
  */
 #include <dlfcn.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <sys/socket.h>
@@ -138,6 +163,10 @@ struct banner_native_handle { int version; int numFds; int numInts; int data[]; 
 /* QTI private_handle_t flags (gr_priv_handle.h / gralloc_priv.h). */
 #define BANNER_QTI_FLAG_UBWC                0x08000000u /* PRIV_FLAGS_UBWC_ALIGNED */
 #define BANNER_QTI_FLAG_UBWC_PI             0x40000000u /* PRIV_FLAGS_UBWC_ALIGNED_PI (YUV only): not ours */
+
+/* Extra images for a gralloc MAILBOX / IMMEDIATE chain (see "Image count" in the script header). */
+#define BANNER_AHB_EXTRA_IMAGES     2u
+#define BANNER_AHB_EXTRA_IMAGES_MAX 4u
 
 /* The gralloc requests a chain's buffers can be allocated with, in the order they are tried. */
 enum {
@@ -214,6 +243,21 @@ banner_ahb_want(const struct wsi_wl_display *display)
    if (banner_ahb_env_disabled())
       return false;
    return display->banner_ahb_mode;
+}
+
+/* How many images to add to a swapchain being created: only while the compositor wants gralloc
+ * images, and only for the non-blocking present modes. */
+static uint32_t
+banner_ahb_extra_images(const struct wsi_wl_display *display, VkPresentModeKHR mode)
+{
+   if (mode != VK_PRESENT_MODE_MAILBOX_KHR && mode != VK_PRESENT_MODE_IMMEDIATE_KHR)
+      return 0;
+   if (!banner_ahb_want(display))
+      return 0;
+   const char *e = getenv("BANNER_WSI_AHB_EXTRA_IMAGES");
+   if (e && e[0] >= '0' && e[0] <= '9')
+      return MIN2((uint32_t)atoi(e), BANNER_AHB_EXTRA_IMAGES_MAX);
+   return BANNER_AHB_EXTRA_IMAGES;
 }
 
 static void
@@ -703,6 +747,39 @@ banner_ahb_attach(struct wsi_wl_swapchain *chain, struct wsi_wl_image *image, st
    chain->banner.attached++;
 }
 
+/* Which free image the implicit acquire hands out on a gralloc chain ("Acquire order" in the script
+ * header): -1 when none is free. dma-buf poll with a zero timeout never blocks; a pending fence reads
+ * as "not ready" (also while an earlier poll's callback is armed). */
+static int
+banner_ahb_pick_free(struct wsi_wl_swapchain *chain)
+{
+   int own = -1, display = -1;
+   for (uint32_t i = 0; i < chain->base.image_count; i++) {
+      if (chain->images[i].busy)
+         continue;
+      const int fd = chain->images[i].base.dma_buf_fd;
+      struct pollfd p = {.fd = fd, .events = POLLIN | POLLOUT};
+      if (fd < 0 || poll(&p, 1, 0) < 0 || (p.revents & (POLLERR | POLLNVAL)))
+         return (int)i; /* can't tell: Mesa's own order */
+      if (p.revents & POLLOUT)
+         return (int)i; /* every fence signalled */
+      if (!(p.revents & POLLIN)) {
+         if (own < 0)
+            own = (int)i; /* our own rendering into it still runs: the queue is in order anyway */
+      } else if (display < 0) {
+         display = (int)i; /* only the display's release fence is left */
+      }
+   }
+   if (own >= 0 || display < 0)
+      return own;
+   if (!chain->banner.held_said) {
+      chain->banner.held_said = true;
+      fprintf(stderr, "banner-ahb: every free image is still held by the display: the acquire waits "
+              "for it (%u images)\n", chain->base.image_count);
+   }
+   return display;
+}
+
 static void
 banner_ahb_image_fini(struct wsi_wl_image *image)
 {
@@ -749,6 +826,7 @@ patch(os.path.join(wsi, 'wsi_common_wayland.c'), [
      '      bool mode;                  /* images come from gralloc */\n'
      '      bool want;                  /* the mode this chain was built for (banner_ahb_mode_changed) */\n'
      '      bool retire_said;           /* the "rebuilding it" line was logged once */\n'
+     '      bool held_said;             /* the "every free image is held" line was logged once */\n'
      '      int req;                    /* BANNER_AHB_REQ_*: the gralloc request its buffers use */\n'
      '      bool replaced_list;         /* explicit_info took drm_mod_list\'s place in create.pNext */\n'
      '      uint32_t ahb_format;\n'
@@ -791,10 +869,34 @@ patch(os.path.join(wsi, 'wsi_common_wayland.c'), [
      '         continue;\n'
      '      if (banner_ahb_skip_format(&display, disp_fmt->vk_format))\n'
      '         continue;\n', 2),
-    # swapchain creation: decide before the images are made
+    # implicit acquire: on a gralloc chain, prefer a free image the display is done with
+    ('      /* Try to find a free image. */\n'
+     '      for (uint32_t i = 0; i < chain->base.image_count; i++) {\n'
+     '         if (!chain->images[i].busy) {\n',
+     '      /* Zero-copy: prefer a free image the display is done with (banner_ahb_pick_free). */\n'
+     '      if (chain->banner.mode) {\n'
+     '         int banner_i = banner_ahb_pick_free(chain);\n'
+     '         if (banner_i >= 0) {\n'
+     '            *image_index = (uint32_t)banner_i;\n'
+     '            chain->images[banner_i].busy = true;\n'
+     '            chain->images[banner_i].flow_id = id;\n'
+     '            return (chain->suboptimal ? VK_SUBOPTIMAL_KHR : VK_SUCCESS);\n'
+     '         }\n'
+     '      }\n'
+     '      /* Try to find a free image. */\n'
+     '      for (uint32_t i = 0; i < chain->base.image_count; i++) {\n'
+     '         if (!chain->images[i].busy) {\n', 1),
+    # swapchain creation: decide before the images are made; a Wayland dma-buf chain with implicit
+    # sync has its acquire wait on the dma-buf's fences (wsi_common.c part below)
     ('   for (uint32_t i = 0; i < chain->base.image_count; i++) {\n'
      '      result = wsi_wl_image_init(chain, &chain->images[i],\n'
      '                                 pCreateInfo, pAllocator);\n',
+     '   {\n'
+     '      const char *nowait = getenv("BANNER_WSI_NO_DMABUF_WAIT");\n'
+     '      chain->base.banner_wait_dma_buf = chain->buffer_type == WSI_WL_BUFFER_NATIVE &&\n'
+     '                                        !chain->base.image_info.explicit_sync &&\n'
+     '                                        !(nowait && nowait[0] == \'1\');\n'
+     '   }\n'
      '   banner_ahb_setup_chain(chain);\n'
      '\n'
      '   for (uint32_t i = 0; i < chain->base.image_count; i++) {\n'
@@ -820,4 +922,140 @@ patch(os.path.join(wsi, 'wsi_common_wayland.c'), [
      '   if (chain->retired || banner_ahb_mode_changed(chain))\n      return VK_ERROR_OUT_OF_DATE_KHR;\n', 3),
 ])
 
-print("wsi_common_wayland.c: gralloc-backed swapchain images behind banner_ahb_v1 (mode event / BANNER_WSI_AHB)")
+# Image count: the two trees allocate the chain differently.
+wl = os.path.join(wsi, 'wsi_common_wayland.c')
+src = open(wl).read()
+PIPETTO_SIZE = '   size_t size = sizeof(*chain) + MAX2(WSI_WL_BUMPED_NUM_IMAGES, pCreateInfo->minImageCount) * sizeof(chain->images[0]);\n'
+PRESENT = '   VkPresentModeKHR present_mode = wsi_swapchain_get_present_mode(wsi_device, pCreateInfo);\n'
+BUMP = ('   /* Bannerlator zero-copy: a gralloc chain\'s buffers spend longer with the display (see\n'
+        '    * banner_ahb_extra_images); the allocation above has room for these. */\n'
+        '   num_images += banner_ahb_extra_images(wsi_wl_surface->display, pCreateInfo->presentMode);\n\n')
+if PIPETTO_SIZE in src:
+    # Mesa 25.0 (Pipetto): num_images is final right before the present mode is read.
+    patch(wl, [
+        (PIPETTO_SIZE,
+         '   size_t size = sizeof(*chain) + (MAX2(WSI_WL_BUMPED_NUM_IMAGES, pCreateInfo->minImageCount) +\n'
+         '                                   BANNER_AHB_EXTRA_IMAGES_MAX) * sizeof(chain->images[0]);\n', 1),
+        (PRESENT, BUMP + PRESENT, 1)])
+else:
+    # Mesa 24.2 (leegao): num_images sizes the allocation before the display is known.
+    patch(wl, [
+        ('   size_t size = sizeof(*chain) + num_images * sizeof(chain->images[0]);\n',
+         '   size_t size = sizeof(*chain) + (num_images + BANNER_AHB_EXTRA_IMAGES_MAX) * sizeof(chain->images[0]);\n', 1),
+        (PRESENT, BUMP + PRESENT, 1)])
+
+# 3. wsi_common: the acquire waits on the dma-buf's fences when the driver has no vk_sync types
+#    (the wrapper), for chains that asked for it (only the Wayland WSI above ever does).
+patch(os.path.join(wsi, 'wsi_common_private.h'), [
+    ('   int signal_dma_buf_from_semaphore;\n',
+     '   int signal_dma_buf_from_semaphore;\n'
+     '   bool banner_wait_dma_buf; /* Bannerlator: acquire imports the dma-buf fences (wrapper, Wayland) */\n', 1)])
+
+sync_helper = r"""
+/* Bannerlator: the acquire's sync_file for a chain that waits on its dma-buf (banner_wait_dma_buf),
+ * -1 (= already signalled, the old behaviour) for everything else. See banner_ahb_wsi_mesa242.py. */
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+struct banner_dma_buf_export_sync_file { uint32_t flags; int32_t fd; };
+#define BANNER_DMA_BUF_SYNC_RW 3u
+#define BANNER_DMA_BUF_IOCTL_EXPORT_SYNC_FILE _IOWR('b', 2, struct banner_dma_buf_export_sync_file)
+static int banner_dma_buf_wait_state; /* 0 = untried, 1 = works, -1 = kernel has no ioctl */
+
+static int
+banner_acquire_sync_fd(const struct wsi_swapchain *chain, const struct wsi_image *image)
+{
+   if (!chain->banner_wait_dma_buf || image->dma_buf_fd < 0 || banner_dma_buf_wait_state < 0)
+      return -1;
+   struct banner_dma_buf_export_sync_file exp = {.flags = BANNER_DMA_BUF_SYNC_RW, .fd = -1};
+   int r;
+   do {
+      r = ioctl(image->dma_buf_fd, BANNER_DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &exp);
+   } while (r < 0 && (errno == EINTR || errno == EAGAIN));
+   if (r < 0 || exp.fd < 0) {
+      if (errno == ENOTTY || errno == ENOSYS || errno == EINVAL) {
+         banner_dma_buf_wait_state = -1;
+         fprintf(stderr, "wrapper-wsi: DMA_BUF_IOCTL_EXPORT_SYNC_FILE unsupported (%s): the acquire "
+                 "cannot wait for the compositor / display\n", strerror(errno));
+      }
+      return -1;
+   }
+   if (!banner_dma_buf_wait_state) {
+      banner_dma_buf_wait_state = 1;
+      fprintf(stderr, "wrapper-wsi: acquire waits on the dma-buf's fences (sync_file into the "
+              "program's semaphore / fence, SYNC_FD temporary import)\n");
+   }
+   return exp.fd;
+}
+
+/* Import fd (owned on success) or, if the driver refuses it, fall back to -1 as before. */
+static VkResult
+banner_import_semaphore(const struct wsi_swapchain *chain, VkSemaphore sem, int fd)
+{
+   VkImportSemaphoreFdInfoKHR info = {
+      .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
+      .semaphore = sem,
+      .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+      .fd = fd,
+      .flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
+   };
+   VkResult r = chain->wsi->ImportSemaphoreFdKHR(chain->device, &info);
+   if (r == VK_SUCCESS || fd < 0)
+      return r;
+   close(fd);
+   static bool said;
+   if (!said) {
+      said = true;
+      fprintf(stderr, "wrapper-wsi: the driver refused a sync_file semaphore import (%d): acquire does not wait\n", r);
+   }
+   info.fd = -1;
+   return chain->wsi->ImportSemaphoreFdKHR(chain->device, &info);
+}
+
+static VkResult
+banner_import_fence(const struct wsi_swapchain *chain, VkFence fence, int fd)
+{
+   VkImportFenceFdInfoKHR info = {
+      .sType = VK_STRUCTURE_TYPE_IMPORT_FENCE_FD_INFO_KHR,
+      .fence = fence,
+      .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
+      .fd = fd,
+      .flags = VK_FENCE_IMPORT_TEMPORARY_BIT,
+   };
+   VkResult r = chain->wsi->ImportFenceFdKHR(chain->device, &info);
+   if (r == VK_SUCCESS || fd < 0)
+      return r;
+   close(fd);
+   static bool said;
+   if (!said) {
+      said = true;
+      fprintf(stderr, "wrapper-wsi: the driver refused a sync_file fence import (%d): acquire fence does not wait\n", r);
+   }
+   info.fd = -1;
+   return chain->wsi->ImportFenceFdKHR(chain->device, &info);
+}
+
+static VkResult
+wsi_signal_semaphore_for_image(struct vk_device *device,"""
+
+patch(os.path.join(wsi, 'wsi_common.c'), [
+    ('\nstatic VkResult\nwsi_signal_semaphore_for_image(struct vk_device *device,', sync_helper, 1),
+    ('   if (device->physical->supported_sync_types == NULL) {\n'
+     '      const VkImportSemaphoreFdInfoKHR import_fd_info = {\n',
+     '   if (device->physical->supported_sync_types == NULL) {\n'
+     '      if (chain->banner_wait_dma_buf)\n'
+     '         return banner_import_semaphore(chain, _semaphore, banner_acquire_sync_fd(chain, image));\n'
+     '      const VkImportSemaphoreFdInfoKHR import_fd_info = {\n', 1),
+    ('   if (device->physical->supported_sync_types == NULL) {\n'
+     '      const VkImportFenceFdInfoKHR import_fd_info = {\n',
+     '   if (device->physical->supported_sync_types == NULL) {\n'
+     '      if (chain->banner_wait_dma_buf)\n'
+     '         return banner_import_fence(chain, _fence, banner_acquire_sync_fd(chain, image));\n'
+     '      const VkImportFenceFdInfoKHR import_fd_info = {\n', 1),
+])
+
+print("wsi_common_wayland.c: gralloc-backed swapchain images behind banner_ahb_v1 (mode event / BANNER_WSI_AHB), "
+      "acquire order + extra images for gralloc chains")
+print("wsi_common.c: Wayland dma-buf acquires wait on the dma-buf's fences (no vk_sync types)")

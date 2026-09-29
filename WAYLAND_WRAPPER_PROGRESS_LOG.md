@@ -183,3 +183,23 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   and throttles when unfocused); one tap on the screen fixes it. Not a wrapper issue; focus handoff on Wayland is a
   separate app/compositor follow-up.
 - leegao build (da89209) vkCreateDevice fault: not root-caused, superseded by the Pipetto lineage.
+
+## 2026-09-28 21:30 -- tear-safe + fast zero-copy (pipetto-ahb)
+
+- Cause (read from the Pipetto tree ecdd0da): the wrapper's vk_physical_device has no vk_sync types, so
+  src/vulkan/wsi/wsi_common.c wsi_signal_semaphore_for_image() / wsi_signal_fence_for_image() (~l.1234 / ~l.1278)
+  take their `supported_sync_types == NULL` branch and import SYNC_FD fd -1 ("already signalled") into the
+  program's semaphore / fence. The dma-buf's fences (our render fence + the display's release fence the compositor
+  imports before wl_buffer.release) are never waited for: the old AHB build's 3632 fps D3D11 came from rendering
+  into buffers the display may still scan out. Setting supported_sync_types is not an option: the semaphore / fence
+  handles are the real driver's (wrapper trampolines), not vk_semaphore / vk_fence objects.
+- Fix (banner/ahb/banner_ahb_wsi_mesa242.py):
+  1. wsi_common.c: for a chain with wsi_swapchain.banner_wait_dma_buf (set only by the Wayland WSI, for NATIVE
+     dma-buf chains with implicit sync; BANNER_WSI_NO_DMABUF_WAIT=1 = off) the NULL-sync branch exports the dma-buf's
+     fences (DMA_BUF_IOCTL_EXPORT_SYNC_FILE, RW) and imports that sync_file through the driver's
+     vkImportSemaphoreFdKHR / vkImportFenceFdKHR (SYNC_FD, temporary); refusal / no ioctl -> fd -1 as before, logged
+     once. X11 chains never set the flag -> unchanged.
+  2. Acquire order from Banners-Turnip (idle > own-render-only > display-held, poll timeout 0).
+  3. +2 images for gralloc MAILBOX / IMMEDIATE chains (BANNER_WSI_AHB_EXTRA_IMAGES=0..4).
+  Dry-applied to both trees (Pipetto ecdd0da and this leegao tree). Build check: the AHB .so must carry the new
+  log string + the env name. pipetto-ahb package renamed Wrapper-Wayland-PIPETTO-AHB-TSAFE-TEST-<sha>.

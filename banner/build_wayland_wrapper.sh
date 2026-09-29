@@ -394,6 +394,9 @@ package_check(){
 	if [ "${WITH_AHB:-0}" = 1 ]; then
 		grep -q banner_ahb_v1 "$so" || fail "banner_ahb_v1 missing (zero-copy patch not in)"
 		log "banner_ahb_v1: in"
+		grep -q "wrapper-wsi: acquire waits on the dma-buf" "$so" || fail "dma-buf acquire wait missing (tear-safe sync not in)"
+		grep -q "BANNER_WSI_AHB_EXTRA_IMAGES" "$so" || fail "extra gralloc images missing"
+		log "tear-safe acquire (dma-buf fences) + acquire order + extra images: in"
 	fi
 	echo "$dyn" > "$out/dynamic.txt"
 	grep -E ' UND ' <<< "$syms" | awk '{print $NF}' | sort > "$out/undefined.txt"

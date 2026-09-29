@@ -46,7 +46,7 @@ jobs:
           case "${{ matrix.variant }}" in
             ahb) tag=Wrapper-Wayland-AHB-TEST ;;
             pipetto) tag=Wrapper-Wayland-PIPETTO-TEST ;;
-            pipetto-ahb) tag=Wrapper-Wayland-PIPETTO-AHB-TEST ;;
+            pipetto-ahb) tag=Wrapper-Wayland-PIPETTO-AHB-TSAFE-TEST ;;
             *) tag=Wrapper-Wayland-TEST ;;
           esac
           mkdir -p _pkg
