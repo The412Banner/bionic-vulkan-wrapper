@@ -250,3 +250,5 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   IOCTL_KGSL_CMDSTREAM_READTIMESTAMP_CTXTID (RETIRED) + wrap-safe compare (0 / -1 ETIMEDOUT = VK_TIMEOUT, what the
   caller asked for). Everything else goes to the previous target (libfakeinput's ioctl). BANNER_KGSL_POLL_FIX=0 = off.
   Logs "wrapper-kgsl: zero-timeout poll fix on (...)" and the first converted wait. Build check: strings + dl_iterate_phdr import.
+- Run 17 `36563471441` (1872e25, headSha verified): started.
+- Run 17 `36563471441` (1872e25): pipetto legs FAILED on the new build check only (dl_iterate_phdr is imported as dl_iterate_phdr@LIBC; the regex wanted an unversioned name). plain/ahb green. Regex fixed.

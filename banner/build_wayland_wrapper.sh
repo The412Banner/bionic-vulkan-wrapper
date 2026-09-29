@@ -419,7 +419,7 @@ package_check(){
 	if [ "$SOURCE" = pipetto ]; then
 		grep -q "wrapper-kgsl: zero-timeout poll fix" "$so" || fail "KGSL zero-timeout poll fix missing"
 		grep -q "BANNER_KGSL_POLL_FIX" "$so" || fail "BANNER_KGSL_POLL_FIX switch missing"
-		grep -qE ' UND +dl_iterate_phdr$' <<< "$syms" || fail "dl_iterate_phdr not imported (KGSL poll fix not linked in?)"
+		grep -qE ' UND +dl_iterate_phdr(@|$)' <<< "$syms" || fail "dl_iterate_phdr not imported (KGSL poll fix not linked in?)"
 		log "KGSL zero-timeout poll fix: in"
 	fi
 	if [ "${WITH_AHB:-0}" = 1 ]; then
