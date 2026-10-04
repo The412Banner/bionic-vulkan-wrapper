@@ -6,7 +6,7 @@ name: Wayland wrapper (TEST)
 # default branch.
 on:
   push:
-    branches: [banner/wayland-wsi]
+    branches: [banner/wayland-wsi, "banner/wayland-wsi-*"]
   workflow_dispatch:
 
 permissions:

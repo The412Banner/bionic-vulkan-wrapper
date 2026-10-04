@@ -32,6 +32,8 @@
 #
 # Environment (all optional): SPIRV_TOOLS_REF, SPIRV_HEADERS_REF, ADRENOTOOLS_REF, OUT_DIR, WITH_AHB=1
 # (apply the banner_ahb_v1 zero-copy patch, banner/ahb/).
+# Pipetto legs also get banner/kgsl (KGSL zero-timeout polls) and banner/passthrough (vkCmd* straight to the
+# driver; runtime switch BANNER_WRAPPER_PASSTHROUGH=0).
 
 set -eo pipefail
 
@@ -211,6 +213,7 @@ patch("src/vulkan/wsi/wsi_common_wayland.c",
 print("pipetto: explicit modifiers + per-swapchain log applied")
 PY2
 	apply_kgsl_poll_fix
+	apply_passthrough
 }
 
 # Zero-timeout KGSL timestamp waits as real polls (banner/kgsl/banner_kgsl_poll.h has the why): the
@@ -235,6 +238,16 @@ patch("src/vulkan/wrapper/wrapper_physical_device.c",
       "         banner_kgsl_poll_fix(); /* Bannerlator: KGSL zero-timeout waits = polls */\n")
 print("pipetto: KGSL zero-timeout poll fix applied")
 PY3
+}
+
+# Pass-through dispatch (banner/passthrough/banner_passthrough.h has the design): a pass-through device
+# hands the application the driver's VkCommandBuffer handles and vkGetDeviceProcAddr answers every
+# VkCommandBuffer entry point with the driver's own function, so vkCmd* skip the wrapper's trampoline.
+# BANNER_WRAPPER_PASSTHROUGH=0 = the old dispatch. Pipetto tree only (the leegao tree in this repository
+# wraps differently and is not the shipped lineage).
+apply_passthrough(){
+	log "applying banner/passthrough/banner_passthrough_patch.py"
+	python3 "$repo/banner/passthrough/banner_passthrough_patch.py" "$mesa" || die "pass-through dispatch patch failed"
 }
 
 apply_ahb(){
@@ -421,6 +434,10 @@ package_check(){
 		grep -q "BANNER_KGSL_POLL_FIX" "$so" || fail "BANNER_KGSL_POLL_FIX switch missing"
 		grep -qE ' UND +dl_iterate_phdr(@|$)' <<< "$syms" || fail "dl_iterate_phdr not imported (KGSL poll fix not linked in?)"
 		log "KGSL zero-timeout poll fix: in"
+		grep -q "wrapper-dispatch: pass-through" "$so" || fail "pass-through dispatch missing (banner_passthrough.c not built in?)"
+		grep -q "wrapper-dispatch: full wrapping" "$so" || fail "pass-through dispatch: full-wrapping fallback line missing"
+		grep -q "BANNER_WRAPPER_PASSTHROUGH" "$so" || fail "BANNER_WRAPPER_PASSTHROUGH switch missing"
+		log "pass-through dispatch (BANNER_WRAPPER_PASSTHROUGH): in"
 	fi
 	if [ "${WITH_AHB:-0}" = 1 ]; then
 		grep -q banner_ahb_v1 "$so" || fail "banner_ahb_v1 missing (zero-copy patch not in)"
