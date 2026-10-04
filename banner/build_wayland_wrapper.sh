@@ -257,6 +257,10 @@ apply_ahb(){
 	log "applying banner/ahb/banner_ahb_wsi_mesa242.py"
 	# Its anchors also match the Pipetto tree's Mesa 25.0 WSI (dry-applied 2026-09-28).
 	python3 "$repo/banner/ahb/banner_ahb_wsi_mesa242.py" "$mesa" || die "banner_ahb_wsi_mesa242.py did not apply"
+	# Part 2: the client's render-complete sync_file as the compositor's acquire fence per commit
+	# (banner_ahb_v1.fence, interface version 3; BANNER_WSI_NO_CLIENT_FENCE=1 = off).
+	log "applying banner/ahb/banner_ahb_client_fence.py"
+	python3 "$repo/banner/ahb/banner_ahb_client_fence.py" "$mesa" || die "banner_ahb_client_fence.py did not apply"
 }
 
 configure_build(){
@@ -445,6 +449,10 @@ package_check(){
 		grep -q "wrapper-wsi: acquire waits on the dma-buf" "$so" || fail "dma-buf acquire wait missing (tear-safe sync not in)"
 		grep -q "BANNER_WSI_AHB_EXTRA_IMAGES" "$so" || fail "extra gralloc images missing"
 		log "tear-safe acquire (dma-buf fences) + acquire order + extra images: in"
+		grep -q "banner-ahb: client render fences on" "$so" || fail "client render fences missing (banner_ahb_client_fence.py not in)"
+		grep -q "BANNER_WSI_NO_CLIENT_FENCE" "$so" || fail "BANNER_WSI_NO_CLIENT_FENCE switch missing"
+		grep -q "fence needs" "$so" || fail "client render fences: version-3 gate line missing"
+		log "client render fences (banner_ahb_v1 v3 fence request): in"
 	fi
 	echo "$dyn" > "$out/dynamic.txt"
 	grep -E ' UND ' <<< "$syms" | awk '{print $NF}' | sort > "$out/undefined.txt"

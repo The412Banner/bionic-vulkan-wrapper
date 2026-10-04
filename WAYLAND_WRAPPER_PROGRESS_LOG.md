@@ -346,3 +346,42 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   3. A draw-call-heavy DXVK game (DiRT Showdown race, GoW) fps + HUD CPU frame time, pass-through vs =0.
   4. Correctness: BCn-emulating driver (Qualcomm blob / Mali) must log "full wrapping (BCn emulation ...)"
      and render as before; swapchain recreate (alt-tab / resize) and vkd3d-proton (QueueSubmit2) paths.
+
+## 2026-10-03 (later) -- adapter v2 item 1b: client render fences for zero-copy (banner_ahb_v1 v3 `fence`)
+
+- Compositor side (already in the app): banner_ahb_v1 version 3 adds request `fence(wl_buffer buffer, fd)`
+  (opcode 2; destroy 0, attach 1), the client's render-complete sync_file for the buffer's next commit,
+  used as SurfaceFlinger's acquire fence, preferred over the compositor's own dma-buf export; v1/v2
+  clients unchanged; a fence for a buffer without an AHB is closed and ignored.
+- Client side, this branch (EDIT ONLY, not built):
+  - banner/ahb/banner-ahb-v1.xml -> version="3" with the fence request after the mode event;
+    banner-ahb-v1-client-protocol.h / -protocol.c regenerated with wayland-scanner 1.24.0 (client-header /
+    private-code): `{ "fence", "3oh" }` opcode 2, BANNER_AHB_V1_FENCE_SINCE_VERSION 3, interface version 3,
+    3 requests; no new libwayland import (same wl_proxy_* set as before).
+  - banner/ahb/banner_ahb_wsi_mesa242.py: registry bind clamps to MIN2(advertised, 3u) (was 2u).
+  - NEW banner/ahb/banner_ahb_client_fence.py, applied by `apply_ahb` right after banner_ahb_wsi_mesa242.py
+    (both ahb legs; anchors asserted and dry-applied to this tree's Mesa 24.2 WSI and to the Pipetto
+    Mesa 25.0 WSI at ecdd0da): struct wsi_image.banner_render_fence_fd (-1, closed in wsi_destroy_image),
+    struct wsi_swapchain.banner_client_fence; wsi_signal_dma_buf_from_semaphore() keeps a dup
+    (os_dupfd_cloexec) of the sync_file it exports from chain->dma_buf_semaphore when the chain sends
+    fences (the import into the dma-buf is unchanged); wsi_wl_swapchain_queue_present() calls
+    banner_cf_send() right before wl_surface_attach: fence from the stash, else DMA_BUF_IOCTL_EXPORT_SYNC_FILE
+    with DMA_BUF_SYNC_READ on image->dma_buf_fd (= the dma-buf's write fences, what a reader must wait
+    for), else nothing (today's behaviour); banner_ahb_v1_fence(display->banner_ahb, image->buffer, fd),
+    then close(fd) (libwayland dups on send). Only gralloc (banner.mode) chains on a version >= 3
+    compositor send (banner_cf_setup_chain, after banner_ahb_setup_chain).
+  - Switch BANNER_WSI_NO_CLIENT_FENCE=1. Lines: `banner-ahb: client render fences on (sync_fd from
+    semaphore|dma-buf export)` at the first fence of a chain; `banner-ahb: client render fences off
+    (BANNER_WSI_NO_CLIENT_FENCE=1 | compositor banner_ahb_v1 version N, fence needs 3 |
+    DMA_BUF_IOCTL_EXPORT_SYNC_FILE unsupported: ...)`.
+  - package_check (ahb legs): "banner-ahb: client render fences on", "BANNER_WSI_NO_CLIENT_FENCE",
+    "fence needs" must be in the .so.
+- Ordering: wsi_common_queue_present() submits the wait-semaphores batch (signals dma_buf_semaphore)
+  -> wsi_signal_dma_buf_from_semaphore() (export + dup + import) -> swapchain->queue_present() ->
+  banner_cf_send -> wl_surface_attach -> wl_surface_commit: the fence is sent after the rendering work is
+  submitted and before the commit, as the protocol asks.
+- Plain leg unaffected (no banner_ahb); X11 WSI untouched. NOT compiled, NOT device-tested.
+- To verify on device: wine_debug.log shows `banner-ahb: client render fences on (sync_fd from semaphore)`
+  on the Pocket FIT (the tear-safe run proved the semaphore export + dma-buf import path works there);
+  compositor log should report using the client fence; zero-copy fps / tearing unchanged or better;
+  BANNER_WSI_NO_CLIENT_FENCE=1 must behave exactly like the previous build.

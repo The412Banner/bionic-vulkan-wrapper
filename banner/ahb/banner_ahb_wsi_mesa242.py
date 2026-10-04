@@ -849,8 +849,9 @@ patch(os.path.join(wsi, 'wsi_common_wayland.c'), [
     ('      } else if (strcmp(interface, wp_linux_drm_syncobj_manager_v1_interface.name) == 0) {\n',
      '      } else if (strcmp(interface, banner_ahb_v1_interface.name) == 0) {\n'
      '         /* Binding above the advertised version is a fatal wl_display protocol error, and a\n'
-     '          * Bannerlator before the live switch advertises version 1: clamp, never assume 2. */\n'
-     '         display->banner_ahb_version = MIN2(version, 2u);\n'
+     '          * Bannerlator before the live switch advertises version 1: clamp, never assume 3\n'
+     '          * (2 = mode event, 3 = fence request; banner_ahb_client_fence.py). */\n'
+     '         display->banner_ahb_version = MIN2(version, 3u);\n'
      '         display->banner_ahb =\n'
      '            wl_registry_bind(registry, name, &banner_ahb_v1_interface,\n'
      '                             display->banner_ahb_version);\n'

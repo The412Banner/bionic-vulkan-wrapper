@@ -167,6 +167,7 @@ banner_ahb_v1_add_listener(struct banner_ahb_v1 *banner_ahb_v1,
 
 #define BANNER_AHB_V1_DESTROY 0
 #define BANNER_AHB_V1_ATTACH 1
+#define BANNER_AHB_V1_FENCE 2
 
 /**
  * @ingroup iface_banner_ahb_v1
@@ -181,6 +182,10 @@ banner_ahb_v1_add_listener(struct banner_ahb_v1 *banner_ahb_v1,
  * @ingroup iface_banner_ahb_v1
  */
 #define BANNER_AHB_V1_ATTACH_SINCE_VERSION 1
+/**
+ * @ingroup iface_banner_ahb_v1
+ */
+#define BANNER_AHB_V1_FENCE_SINCE_VERSION 3
 
 /** @ingroup iface_banner_ahb_v1 */
 static inline void
@@ -231,6 +236,29 @@ banner_ahb_v1_attach(struct banner_ahb_v1 *banner_ahb_v1, struct wl_buffer *buff
 {
 	wl_proxy_marshal_flags((struct wl_proxy *) banner_ahb_v1,
 			 BANNER_AHB_V1_ATTACH, NULL, wl_proxy_get_version((struct wl_proxy *) banner_ahb_v1), 0, buffer, socket, width, height, stride, modifier_hi, modifier_lo, image_count);
+}
+
+/**
+ * @ingroup iface_banner_ahb_v1
+ *
+ * fd is a sync_file that signals when the client's rendering into buffer
+ * (a wl_buffer an AHardwareBuffer was attached to) is complete; the
+ * compositor owns the fd from here. Sent after the work that renders the
+ * frame is submitted and before the wl_surface.commit that shows buffer;
+ * it applies to that one commit. A fence sent for a buffer without an
+ * attached AHardwareBuffer is closed and ignored. A second fence for the
+ * same buffer before the compositor used the first replaces it. When the
+ * compositor can export the fence from the dma-buf itself, a client may
+ * still send one: the client's fence is preferred, as it is exactly the
+ * render-complete point and not every fence the dma-buf carries. The
+ * compositor never requires it: a version 3 client that sends none is
+ * treated like a version 2 client.
+ */
+static inline void
+banner_ahb_v1_fence(struct banner_ahb_v1 *banner_ahb_v1, struct wl_buffer *buffer, int32_t fd)
+{
+	wl_proxy_marshal_flags((struct wl_proxy *) banner_ahb_v1,
+			 BANNER_AHB_V1_FENCE, NULL, wl_proxy_get_version((struct wl_proxy *) banner_ahb_v1), 0, buffer, fd);
 }
 
 #ifdef  __cplusplus
