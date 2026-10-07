@@ -211,6 +211,7 @@ patch("src/vulkan/wsi/wsi_common_wayland.c",
 print("pipetto: explicit modifiers + per-swapchain log applied")
 PY2
 	apply_kgsl_poll_fix
+	apply_mali_switches
 }
 
 # Zero-timeout KGSL timestamp waits as real polls (banner/kgsl/banner_kgsl_poll.h has the why): the
@@ -235,6 +236,94 @@ patch("src/vulkan/wrapper/wrapper_physical_device.c",
       "         banner_kgsl_poll_fix(); /* Bannerlator: KGSL zero-timeout waits = polls */\n")
 print("pipetto: KGSL zero-timeout poll fix applied")
 PY3
+}
+
+# Mali (PanVK) compatibility switches, all off by default (banner/mali/banner_mali.h has the why):
+# BANNER_MALI_HIDE_EXTS, BANNER_MALI_NO_SUBMIT_WAITS, BANNER_MALI_NO_ACQUIRE_SIGNAL. Ported from
+# FristOneRR-Wrapperv1 (MIT, https://github.com/FristOneRR-Admin/FristOneRR-Wrapperv1 commit 834d827e),
+# where they are always on. Runs before apply_ahb; its anchors do not overlap the AHB patch's.
+apply_mali_switches(){
+	cp "$repo/banner/mali/banner_mali.h" "$mesa/src/vulkan/wrapper/banner_mali.h"
+	python3 - "$mesa" <<'PY4' || die "Mali switches patch failed"
+import sys, os
+root = sys.argv[1]
+def patch(rel, old, new):
+    p = os.path.join(root, rel); s = open(p).read()
+    assert s.count(old) == 1, (rel, old[:60]); open(p, 'w').write(s.replace(old, new))
+CREDIT = "from FristOneRR-Wrapperv1 (MIT, github.com/FristOneRR-Admin/FristOneRR-Wrapperv1 834d827e)"
+# The one translation unit that owns banner_mali_flags and reads the environment (constructor).
+patch("src/vulkan/wrapper/wrapper_physical_device.c", "#include \"banner_kgsl_poll.h\"\n",
+      "#include \"banner_kgsl_poll.h\"\n#define BANNER_MALI_IMPL\n#include \"banner_mali.h\"\n")
+# 1. BANNER_MALI_HIDE_EXTS: no present_id / present_wait / dynamic_rendering extension (1.3 core stays).
+patch("src/vulkan/wrapper/wrapper_physical_device.c",
+      "      supported_features->swapchainMaintenance1 = true;\n",
+      "      /* Bannerlator BANNER_MALI_HIDE_EXTS, " + CREDIT + ":\n"
+      "       * hide VK_KHR_present_id, VK_KHR_present_wait and the VK_KHR_dynamic_rendering extension\n"
+      "       * (Vulkan 1.3 core dynamic rendering stays) so DXVK 2.x runs on FristOneRR PanVK. */\n"
+      "      if (banner_mali_flags & BANNER_MALI_HIDE_EXTS) {\n"
+      "         pdevice->vk.supported_extensions.KHR_present_id = false;\n"
+      "         pdevice->vk.supported_extensions.KHR_present_wait = false;\n"
+      "         pdevice->vk.supported_extensions.KHR_dynamic_rendering = false;\n"
+      "         supported_features->presentId = false;\n"
+      "         supported_features->presentWait = false;\n"
+      "      }\n"
+      "      supported_features->swapchainMaintenance1 = true;\n")
+# 2. BANNER_MALI_NO_SUBMIT_WAITS: drop wait semaphores in vkQueueSubmit / vkQueueSubmit2. FristOneRR
+#    does it for up to 8 submits (its stack copy); the wrapper already copies every submit, so all.
+patch("src/vulkan/wrapper/wrapper_device.c", "#include \"wrapper_trampolines.h\"\n",
+      "#include \"wrapper_trampolines.h\"\n#include \"banner_mali.h\"\n")
+patch("src/vulkan/wrapper/wrapper_device.c",
+      "      wrapper_submits[i] = pSubmits[i];\n"
+      "      wrapper_submits[i].pCommandBuffers = command_buffers;\n",
+      "      wrapper_submits[i] = pSubmits[i];\n"
+      "      wrapper_submits[i].pCommandBuffers = command_buffers;\n"
+      "      /* Bannerlator BANNER_MALI_NO_SUBMIT_WAITS, " + CREDIT + ":\n"
+      "       * no wait semaphores. Only safe on a driver that runs one queue strictly in order. */\n"
+      "      if (banner_mali_flags & BANNER_MALI_NO_SUBMIT_WAITS) {\n"
+      "         wrapper_submits[i].waitSemaphoreCount = 0;\n"
+      "         wrapper_submits[i].pWaitSemaphores = NULL;\n"
+      "         wrapper_submits[i].pWaitDstStageMask = NULL;\n"
+      "      }\n")
+patch("src/vulkan/wrapper/wrapper_device.c",
+      "      wrapper_submits[i] = pSubmits[i];\n"
+      "      wrapper_submits[i].pCommandBufferInfos = command_buffers;\n",
+      "      wrapper_submits[i] = pSubmits[i];\n"
+      "      wrapper_submits[i].pCommandBufferInfos = command_buffers;\n"
+      "      /* Bannerlator BANNER_MALI_NO_SUBMIT_WAITS, " + CREDIT + ":\n"
+      "       * no wait semaphores. Only safe on a driver that runs one queue strictly in order. */\n"
+      "      if (banner_mali_flags & BANNER_MALI_NO_SUBMIT_WAITS) {\n"
+      "         wrapper_submits[i].waitSemaphoreInfoCount = 0;\n"
+      "         wrapper_submits[i].pWaitSemaphoreInfos = NULL;\n"
+      "      }\n")
+# 3. BANNER_MALI_NO_ACQUIRE_SIGNAL: the acquire leaves the program's semaphore / fence alone (no fd -1
+#    import, no dma-buf sync_file import). banner_mali.h only sets it together with NO_SUBMIT_WAITS.
+patch("src/vulkan/wsi/wsi_common.c", "#include \"vk_util.h\"\n",
+      "#include \"vk_util.h\"\n#include <stdio.h>\n#include \"../wrapper/banner_mali.h\"\n")
+patch("src/vulkan/wsi/wsi_common.c",
+      "   image->acquired = true;\n\n"
+      "   if (pAcquireInfo->semaphore != VK_NULL_HANDLE) {\n",
+      "   image->acquired = true;\n\n"
+      "   /* Bannerlator BANNER_MALI_NO_ACQUIRE_SIGNAL, " + CREDIT + ":\n"
+      "    * do not signal the acquire semaphore / fence. Only with BANNER_MALI_NO_SUBMIT_WAITS (the wait on\n"
+      "    * the semaphore is dropped there); also skips the Wayland chains' tear-safe dma-buf wait. */\n"
+      "   const bool banner_mali_no_signal = banner_mali_flags & BANNER_MALI_NO_ACQUIRE_SIGNAL;\n"
+      "   if (banner_mali_no_signal) {\n"
+      "      static bool said;\n"
+      "      if (!said) {\n"
+      "         said = true;\n"
+      "         fprintf(stderr, \"wrapper-mali: acquire semaphore / fence left unsignalled (first acquire)\\n\");\n"
+      "      }\n"
+      "   }\n\n"
+      "   if (pAcquireInfo->semaphore != VK_NULL_HANDLE && !banner_mali_no_signal) {\n")
+patch("src/vulkan/wsi/wsi_common.c",
+      "   if (pAcquireInfo->fence != VK_NULL_HANDLE) {\n"
+      "      VkResult signal_result =\n"
+      "         wsi_signal_fence_for_image(",
+      "   if (pAcquireInfo->fence != VK_NULL_HANDLE && !banner_mali_no_signal) {\n"
+      "      VkResult signal_result =\n"
+      "         wsi_signal_fence_for_image(")
+print("pipetto: Mali switches (BANNER_MALI_HIDE_EXTS / NO_SUBMIT_WAITS / NO_ACQUIRE_SIGNAL, default off) applied")
+PY4
 }
 
 apply_ahb(){
@@ -421,6 +510,11 @@ package_check(){
 		grep -q "BANNER_KGSL_POLL_FIX" "$so" || fail "BANNER_KGSL_POLL_FIX switch missing"
 		grep -qE ' UND +dl_iterate_phdr(@|$)' <<< "$syms" || fail "dl_iterate_phdr not imported (KGSL poll fix not linked in?)"
 		log "KGSL zero-timeout poll fix: in"
+		for sym in BANNER_MALI_HIDE_EXTS BANNER_MALI_NO_SUBMIT_WAITS BANNER_MALI_NO_ACQUIRE_SIGNAL \
+		           "wrapper-mali: hide_exts=" "wrapper-mali: acquire semaphore / fence left unsignalled"; do
+			grep -q "$sym" "$so" || fail "Mali switch string missing: $sym"
+		done
+		log "Mali switches (default off): in"
 	fi
 	if [ "${WITH_AHB:-0}" = 1 ]; then
 		grep -q banner_ahb_v1 "$so" || fail "banner_ahb_v1 missing (zero-copy patch not in)"

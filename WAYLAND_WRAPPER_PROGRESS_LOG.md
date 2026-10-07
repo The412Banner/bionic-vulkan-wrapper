@@ -276,3 +276,28 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   on feat/linux-gamescope-runtime <- run 18 pipetto-ahb libvulkan_wrapper.so.
 - Proper upstream fix belongs in Turnip (tu_knl_kgsl.cc): wait_timestamp_safe() / kgsl_syncobj_wait() must not send
   timeout 0 to KGSL; read the retired timestamp instead. It hits the X11 path too (imagefs wrapper, same Turnip).
+
+## 2026-10-07 -- Mali (PanVK) compatibility switches, branch banner/wayland-mali (off banner/wayland-wsi 67911cb = 3af78e4 code)
+
+- Why: a tester runs FristOneRR PanVK (Mesa PanVK on kbase, Mali-G57). FristOneRR's own wrapper
+  (FristOneRR-Wrapperv1, MIT, https://github.com/FristOneRR-Admin/FristOneRR-Wrapperv1, leegao v0.0.5r5 based,
+  X11-only; commit 834d827e) makes DXVK 2.x work there with three always-on changes. Ported here as runtime
+  switches, ALL OFF by default (none set = the wrapper behaves exactly as 3af78e4). Credit in each patched spot.
+- banner/mali/banner_mali.h + build_wayland_wrapper.sh apply_mali_switches() (Pipetto legs, after the KGSL fix,
+  before banner_ahb; asserted anchors). Env read once in a constructor (wrapper_physical_device.c owns
+  banner_mali_flags); one line "wrapper-mali: hide_exts=%d no_submit_waits=%d no_acquire_signal=%d" when any is set.
+  * BANNER_MALI_HIDE_EXTS=1: VK_KHR_present_id / VK_KHR_present_wait / VK_KHR_dynamic_rendering extension not
+    exposed, presentId / presentWait features off; 1.3 core dynamic rendering stays.
+  * BANNER_MALI_NO_SUBMIT_WAITS=1: vkQueueSubmit / vkQueueSubmit2 drop all wait semaphores (FristOneRR: up to 8
+    submits = its stack copy; the wrapper already copies every submit, so all). Only for a one-queue in-order driver.
+    The WSI's present submit goes through the same entry point, so it loses its render-semaphore wait too (same as
+    FristOneRR). D3D12 (vkd3d-proton timeline waits across queues) may misbehave with it.
+  * BANNER_MALI_NO_ACQUIRE_SIGNAL=1: acquire leaves the program's semaphore / fence unsignalled. Guarded: honoured
+    only with BANNER_MALI_NO_SUBMIT_WAITS=1 (alone = next submit waits on a binary semaphore nothing signals = hang;
+    logged and ignored). Still hangs a program that CPU-waits the acquire fence (DXVK passes none). On our Wayland
+    dma-buf / gralloc chains it also skips the tear-safe dma-buf wait (banner_wait_dma_buf): possible tearing /
+    drawing into an on-screen buffer, no deadlock (the AHB acquire-order pick of an idle image still runs).
+- Existing knobs that overlap: WRAPPER_EXTENSION_BLACKLIST (comma list, honoured; note it strtok()s the getenv
+  string in place, so a second vkCreateInstance in the same process only sees the first entry) and
+  WRAPPER_DISABLE_PRESENT_WAIT (present_wait only).
+- Workflow: banner/wayland-mali added to the push branches. Build check greps the switch strings in pipetto legs.
