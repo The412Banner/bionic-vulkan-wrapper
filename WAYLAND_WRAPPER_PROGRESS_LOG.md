@@ -277,6 +277,115 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
 - Proper upstream fix belongs in Turnip (tu_knl_kgsl.cc): wait_timestamp_safe() / kgsl_syncobj_wait() must not send
   timeout 0 to KGSL; read the retired timestamp instead. It hits the X11 path too (imagefs wrapper, same Turnip).
 
+## 2026-10-03 -- adapter v2 item 1: pass-through dispatch (branch banner/wayland-wsi-passthrough, EDIT ONLY, not built)
+
+- Where the wrapper really is: this repository's src/vulkan/wrapper/ is leegao's tree (the `plain` / `ahb`
+  legs, not shipped). The device-proven adapter is the Pipetto wrapper-25 tree, fetched by
+  banner/build_wayland_wrapper.sh at PIPETTO_REF and patched with anchored edits. Pass-through follows that
+  pattern: banner/passthrough/ (banner_passthrough.[ch] + banner_passthrough_patch.py), applied by
+  `apply_passthrough` on both Pipetto legs after the KGSL poll fix. leegao legs untouched.
+- How the Pipetto wrapper dispatches today: every dispatchable handle is wrapped (wrapper_instance /
+  wrapper_physical_device / wrapper_device / wrapper_queue / wrapper_command_buffer, each a Mesa vk_object
+  with `dispatch_handle` = the handle the Android loader returned); vkGetDeviceProcAddr = Mesa
+  vk_device_get_proc_addr over a table built from wrapper_device_entrypoints (the wrapper's own code),
+  wsi_device_entrypoints (Mesa WSI) and wrapper_device_trampolines (generated: unwrap arg 0, call the
+  driver's table). Non-dispatchable handles are already the driver's; buffer/image/fence side tables are
+  keyed by them. So every vkCmd* paid: trampoline -> load wcb->device -> load dispatch_table.X -> call.
+- Design (hybrid; full pass-through of VkDevice/VkQueue is not possible): the Android loader underneath
+  stores its DeviceData in word[1] of the driver's VkDevice and the Khronos loader above us writes ITS
+  dispatch pointer into word[1] of whatever VkDevice we return (vkDestroyDevice / vkGetDeviceQueue /
+  vkAllocateCommandBuffers on the Android side read it), and the Mesa runtime + WSI need vk_device /
+  vk_queue objects (wsi_QueuePresentKHR, wsi->QueueSubmit, GetDeviceQueue2). VkDevice and VkQueue stay
+  wrapped (one-hop trampoline). VkCommandBuffer passes through: the application gets the driver's command
+  buffers and vkGetDeviceProcAddr returns the driver's function (device->dispatch_table.X, loaded through
+  the Android loader's GDPA = Turnip's own tu_Cmd*) for every VkCommandBuffer entry point -- 213 of the
+  508 device entry points in vk.xml (the other 295 take a VkDevice/VkQueue), i.e. all vkCmd* +
+  Begin/End/ResetCommandBuffer. Nothing on the
+  Android side reads a command buffer's loader word after allocation (no vkCmd* is hooked there), so the
+  Khronos loader overwriting it is harmless; Turnip only uses the word as the loader's.
+- Per device: pass = BANNER_WRAPPER_PASSTHROUGH != 0 && physical->emulate_bcn == 0 (Turnip and
+  BC-capable Qualcomm blobs: 0; Mali / Samsung / PowerVR / old blobs emulate BCn by intercepting
+  vkCmdCopyBufferToImage on wrapped command buffers -> those devices stay fully wrapped, logged as such).
+  One stderr line at vkCreateDevice: `wrapper-dispatch: pass-through (N entry points intercepted; M
+  VkCommandBuffer entry points are the driver's own, K VkDevice/VkQueue entry points keep the one-hop
+  trampoline)` or `wrapper-dispatch: full wrapping (<reason>; N intercepted, K trampolined)`. N/M/K are
+  counted slot by slot from the live tables (wrapper table vs plain trampolines vs driver table).
+- Still intercepted on a pass-through device (the wrapper runs code, not just a hop): CreateDevice,
+  DestroyDevice, GetDeviceQueue(2), GetDeviceProcAddr, CreateBuffer, BindBufferMemory, DestroyBuffer,
+  CreateImage, CreateImageView, DestroyImage, CreateFence, WaitForFences, DestroyFence, CreateShaderModule
+  (Mali SPIR-V patches), AllocateCommandBuffers (driver call + side-table insert), FreeCommandBuffers,
+  DestroyCommandPool, QueueSubmit, QueueSubmit2 (pass-through branch: submits forwarded untouched),
+  SetPrivateData, GetPrivateData, AllocateMemory / FreeMemory / MapMemory2KHR / UnmapMemory /
+  UnmapMemory2KHR (placed mapping), plus the Mesa WSI device entry points (swapchain, acquire, present,
+  present wait, swapchain maintenance). CmdExecuteCommands and CmdCopyBufferToImage are no longer
+  reached (driver's own). Physical-device / instance shaping (extension filtering, features, properties
+  rename "Wrapper(%s)", image-format BCn answers, graphics_env_hooks, every WRAPPER_* knob) unchanged.
+- Side table: driver VkCommandBuffer -> {device, pool} (util hash_table_u64 + simple_mtx), filled by
+  vkAllocateCommandBuffers, emptied by vkFreeCommandBuffers / vkDestroyCommandPool / vkDestroyDevice.
+  Users: generated `banner_pt_command_buffer_trampolines` (one per VkCommandBuffer entry point, added to
+  vk_wrapper_trampolines_gen.py), returned by vkGetInstanceProcAddr and by the WSI's proc_addr
+  (wrapper_wsi_proc_addr -> wsi_device_init) for VkCommandBuffer names while pass-through is enabled,
+  because the Mesa runtime's generic vk_device_trampolines would read a driver handle as a
+  vk_command_buffer. They fall back to the wrapped path for a fully wrapped device. Hot path untouched:
+  vkGetDeviceProcAddr hands the driver pointer, no lookup per call.
+- Switch: BANNER_WRAPPER_PASSTHROUGH=0 -> every device full wrapping, instance GPA / WSI proc_addr
+  unchanged (the old dispatch exactly). Default on.
+- X11: this .so's X11 WSI shares the change (dispatch only, platform-neutral); the imagefs X11 wrapper is
+  a different binary and untouched. The X11 WSI's AHB blit path records command buffers through the
+  WSI's proc_addr -> side-table trampolines, covered.
+- CI build check (package_check, pipetto legs): "wrapper-dispatch: pass-through", "wrapper-dispatch: full
+  wrapping" and "BANNER_WRAPPER_PASSTHROUGH" strings must be in the .so.
+- Verified locally: the patch script applies to the pinned Pipetto wrapper sources (anchors all hit); the
+  patched trampolines generator renders with mako against this tree's vk.xml (213 banner_pt_tramp_*,
+  557 wrapper_tramp_* = 508 device + 49 physical-device, includes resolve). NOT compiled, NOT device-tested.
+- What to measure (A/B, same container, same Turnip, Wayland zero-copy on; X11 untouched):
+  1. wine_debug.log shows `wrapper-dispatch: pass-through (...)` once per device; with
+     BANNER_WRAPPER_PASSTHROUGH=0 `wrapper-dispatch: full wrapping (BANNER_WRAPPER_PASSTHROUGH=0; ...)`.
+  2. AIO graphics test --sweep 15 (all 8 APIs) pass-through vs =0; expect D3D11/D3D9/D3D8 (draw-call bound,
+     DXVK) to move, D3D12 and Vk to move less; run-noise reference is the 2026-09-29 before/after table.
+  3. A draw-call-heavy DXVK game (DiRT Showdown race, GoW) fps + HUD CPU frame time, pass-through vs =0.
+  4. Correctness: BCn-emulating driver (Qualcomm blob / Mali) must log "full wrapping (BCn emulation ...)"
+     and render as before; swapchain recreate (alt-tab / resize) and vkd3d-proton (QueueSubmit2) paths.
+
+## 2026-10-03 (later) -- adapter v2 item 1b: client render fences for zero-copy (banner_ahb_v1 v3 `fence`)
+
+- Compositor side (already in the app): banner_ahb_v1 version 3 adds request `fence(wl_buffer buffer, fd)`
+  (opcode 2; destroy 0, attach 1), the client's render-complete sync_file for the buffer's next commit,
+  used as SurfaceFlinger's acquire fence, preferred over the compositor's own dma-buf export; v1/v2
+  clients unchanged; a fence for a buffer without an AHB is closed and ignored.
+- Client side, this branch (EDIT ONLY, not built):
+  - banner/ahb/banner-ahb-v1.xml -> version="3" with the fence request after the mode event;
+    banner-ahb-v1-client-protocol.h / -protocol.c regenerated with wayland-scanner 1.24.0 (client-header /
+    private-code): `{ "fence", "3oh" }` opcode 2, BANNER_AHB_V1_FENCE_SINCE_VERSION 3, interface version 3,
+    3 requests; no new libwayland import (same wl_proxy_* set as before).
+  - banner/ahb/banner_ahb_wsi_mesa242.py: registry bind clamps to MIN2(advertised, 3u) (was 2u).
+  - NEW banner/ahb/banner_ahb_client_fence.py, applied by `apply_ahb` right after banner_ahb_wsi_mesa242.py
+    (both ahb legs; anchors asserted and dry-applied to this tree's Mesa 24.2 WSI and to the Pipetto
+    Mesa 25.0 WSI at ecdd0da): struct wsi_image.banner_render_fence_fd (-1, closed in wsi_destroy_image),
+    struct wsi_swapchain.banner_client_fence; wsi_signal_dma_buf_from_semaphore() keeps a dup
+    (os_dupfd_cloexec) of the sync_file it exports from chain->dma_buf_semaphore when the chain sends
+    fences (the import into the dma-buf is unchanged); wsi_wl_swapchain_queue_present() calls
+    banner_cf_send() right before wl_surface_attach: fence from the stash, else DMA_BUF_IOCTL_EXPORT_SYNC_FILE
+    with DMA_BUF_SYNC_READ on image->dma_buf_fd (= the dma-buf's write fences, what a reader must wait
+    for), else nothing (today's behaviour); banner_ahb_v1_fence(display->banner_ahb, image->buffer, fd),
+    then close(fd) (libwayland dups on send). Only gralloc (banner.mode) chains on a version >= 3
+    compositor send (banner_cf_setup_chain, after banner_ahb_setup_chain).
+  - Switch BANNER_WSI_NO_CLIENT_FENCE=1. Lines: `banner-ahb: client render fences on (sync_fd from
+    semaphore|dma-buf export)` at the first fence of a chain; `banner-ahb: client render fences off
+    (BANNER_WSI_NO_CLIENT_FENCE=1 | compositor banner_ahb_v1 version N, fence needs 3 |
+    DMA_BUF_IOCTL_EXPORT_SYNC_FILE unsupported: ...)`.
+  - package_check (ahb legs): "banner-ahb: client render fences on", "BANNER_WSI_NO_CLIENT_FENCE",
+    "fence needs" must be in the .so.
+- Ordering: wsi_common_queue_present() submits the wait-semaphores batch (signals dma_buf_semaphore)
+  -> wsi_signal_dma_buf_from_semaphore() (export + dup + import) -> swapchain->queue_present() ->
+  banner_cf_send -> wl_surface_attach -> wl_surface_commit: the fence is sent after the rendering work is
+  submitted and before the commit, as the protocol asks.
+- Plain leg unaffected (no banner_ahb); X11 WSI untouched. NOT compiled, NOT device-tested.
+- To verify on device: wine_debug.log shows `banner-ahb: client render fences on (sync_fd from semaphore)`
+  on the Pocket FIT (the tear-safe run proved the semaphore export + dma-buf import path works there);
+  compositor log should report using the client fence; zero-copy fps / tearing unchanged or better;
+  BANNER_WSI_NO_CLIENT_FENCE=1 must behave exactly like the previous build.
+
 ## 2026-10-07 -- Mali (PanVK) compatibility switches, branch banner/wayland-mali (off banner/wayland-wsi 67911cb = 3af78e4 code)
 
 - Why: a tester runs FristOneRR PanVK (Mesa PanVK on kbase, Mali-G57). FristOneRR's own wrapper
@@ -301,3 +410,13 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   string in place, so a second vkCreateInstance in the same process only sees the first entry) and
   WRAPPER_DISABLE_PRESENT_WAIT (present_wait only).
 - Workflow: banner/wayland-mali added to the push branches. Build check greps the switch strings in pipetto legs.
+
+## 2026-10-19 -- adapter v2: one build with the Mali switches AND pass-through + client render fences (branch banner/wayland-adapter-v2)
+
+- banner/wayland-mali (c9a3ab7, the adapter Bannerlator ships) merged with banner/wayland-wsi-passthrough (db0156d). Until now
+  they were two separate builds: the shipped one had the Mali switches, the other had pass-through dispatch and client fences.
+- Order in the Pipetto legs: KGSL poll fix -> pass-through -> Mali switches -> banner_ahb (+ client fence). Pass-through runs
+  first because its wrapper_device.c include anchor needs the untouched includes; the Mali anchors still match after it.
+- Pass-through forwards vkQueueSubmit untouched, which would bypass BANNER_MALI_NO_SUBMIT_WAITS. banner_pt_device_init now
+  keeps full wrapping when that switch is on (logged: "wrapper-dispatch: full wrapping (BANNER_MALI_NO_SUBMIT_WAITS ...)").
+- Workflow runs on this branch too. NOT device-tested.

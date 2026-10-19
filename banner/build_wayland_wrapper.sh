@@ -32,6 +32,8 @@
 #
 # Environment (all optional): SPIRV_TOOLS_REF, SPIRV_HEADERS_REF, ADRENOTOOLS_REF, OUT_DIR, WITH_AHB=1
 # (apply the banner_ahb_v1 zero-copy patch, banner/ahb/).
+# Pipetto legs also get banner/kgsl (KGSL zero-timeout polls) and banner/passthrough (vkCmd* straight to the
+# driver; runtime switch BANNER_WRAPPER_PASSTHROUGH=0).
 
 set -eo pipefail
 
@@ -211,6 +213,7 @@ patch("src/vulkan/wsi/wsi_common_wayland.c",
 print("pipetto: explicit modifiers + per-swapchain log applied")
 PY2
 	apply_kgsl_poll_fix
+	apply_passthrough
 	apply_mali_switches
 }
 
@@ -238,10 +241,20 @@ print("pipetto: KGSL zero-timeout poll fix applied")
 PY3
 }
 
+# Pass-through dispatch (banner/passthrough/banner_passthrough.h has the design): a pass-through device
+# hands the application the driver's VkCommandBuffer handles and vkGetDeviceProcAddr answers every
+# VkCommandBuffer entry point with the driver's own function, so vkCmd* skip the wrapper's trampoline.
+# BANNER_WRAPPER_PASSTHROUGH=0 = the old dispatch. Pipetto tree only (the leegao tree in this repository
+# wraps differently and is not the shipped lineage).
+apply_passthrough(){
+	log "applying banner/passthrough/banner_passthrough_patch.py"
+	python3 "$repo/banner/passthrough/banner_passthrough_patch.py" "$mesa" || die "pass-through dispatch patch failed"
+}
+
 # Mali (PanVK) compatibility switches, all off by default (banner/mali/banner_mali.h has the why):
 # BANNER_MALI_HIDE_EXTS, BANNER_MALI_NO_SUBMIT_WAITS, BANNER_MALI_NO_ACQUIRE_SIGNAL. Ported from
 # FristOneRR-Wrapperv1 (MIT, https://github.com/FristOneRR-Admin/FristOneRR-Wrapperv1 commit 834d827e),
-# where they are always on. Runs before apply_ahb; its anchors do not overlap the AHB patch's.
+# where they are always on. Runs after apply_passthrough and before apply_ahb; its anchors overlap neither.
 apply_mali_switches(){
 	cp "$repo/banner/mali/banner_mali.h" "$mesa/src/vulkan/wrapper/banner_mali.h"
 	python3 - "$mesa" <<'PY4' || die "Mali switches patch failed"
@@ -333,6 +346,10 @@ apply_ahb(){
 	log "applying banner/ahb/banner_ahb_wsi_mesa242.py"
 	# Its anchors also match the Pipetto tree's Mesa 25.0 WSI (dry-applied 2026-09-28).
 	python3 "$repo/banner/ahb/banner_ahb_wsi_mesa242.py" "$mesa" || die "banner_ahb_wsi_mesa242.py did not apply"
+	# Part 2: the client's render-complete sync_file as the compositor's acquire fence per commit
+	# (banner_ahb_v1.fence, interface version 3; BANNER_WSI_NO_CLIENT_FENCE=1 = off).
+	log "applying banner/ahb/banner_ahb_client_fence.py"
+	python3 "$repo/banner/ahb/banner_ahb_client_fence.py" "$mesa" || die "banner_ahb_client_fence.py did not apply"
 }
 
 configure_build(){
@@ -515,6 +532,11 @@ package_check(){
 			grep -q "$sym" "$so" || fail "Mali switch string missing: $sym"
 		done
 		log "Mali switches (default off): in"
+		grep -q "wrapper-dispatch: pass-through" "$so" || fail "pass-through dispatch missing (banner_passthrough.c not built in?)"
+		grep -q "wrapper-dispatch: full wrapping" "$so" || fail "pass-through dispatch: full-wrapping fallback line missing"
+		grep -q "BANNER_WRAPPER_PASSTHROUGH" "$so" || fail "BANNER_WRAPPER_PASSTHROUGH switch missing"
+		grep -q "BANNER_MALI_NO_SUBMIT_WAITS drops wait semaphores" "$so" || fail "pass-through: Mali no-submit-waits fallback missing"
+		log "pass-through dispatch (BANNER_WRAPPER_PASSTHROUGH): in"
 	fi
 	if [ "${WITH_AHB:-0}" = 1 ]; then
 		grep -q banner_ahb_v1 "$so" || fail "banner_ahb_v1 missing (zero-copy patch not in)"
@@ -522,6 +544,10 @@ package_check(){
 		grep -q "wrapper-wsi: acquire waits on the dma-buf" "$so" || fail "dma-buf acquire wait missing (tear-safe sync not in)"
 		grep -q "BANNER_WSI_AHB_EXTRA_IMAGES" "$so" || fail "extra gralloc images missing"
 		log "tear-safe acquire (dma-buf fences) + acquire order + extra images: in"
+		grep -q "banner-ahb: client render fences on" "$so" || fail "client render fences missing (banner_ahb_client_fence.py not in)"
+		grep -q "BANNER_WSI_NO_CLIENT_FENCE" "$so" || fail "BANNER_WSI_NO_CLIENT_FENCE switch missing"
+		grep -q "fence needs" "$so" || fail "client render fences: version-3 gate line missing"
+		log "client render fences (banner_ahb_v1 v3 fence request): in"
 	fi
 	echo "$dyn" > "$out/dynamic.txt"
 	grep -E ' UND ' <<< "$syms" | awk '{print $NF}' | sort > "$out/undefined.txt"
