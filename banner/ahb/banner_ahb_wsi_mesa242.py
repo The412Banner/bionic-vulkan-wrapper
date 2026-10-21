@@ -908,8 +908,11 @@ patch(os.path.join(wsi, 'wsi_common_wayland.c'), [
     ('   struct wsi_wl_format *disp_fmt;\n'
      '   u_vector_foreach(disp_fmt, &display.formats) {\n',
      '   struct wsi_wl_format *disp_fmt;\n'
-     '   for (int banner_pass = 0; banner_pass < 2; banner_pass++)\n'
+     '   for (int banner_pass = 0; banner_pass < 2; banner_pass++) {\n'
      '   u_vector_foreach(disp_fmt, &display.formats) {\n', 2),
+    # (u_vector_foreach starts with a STATIC_ASSERT statement, so the pass loop needs braces)
+    ('   }\n\n   wsi_wl_display_finish(&display);\n\n   return vk_outarray_status(&out);\n}\n',
+     '   }\n   }\n\n   wsi_wl_display_finish(&display);\n\n   return vk_outarray_status(&out);\n}\n', 2),
     ('      if (!(disp_fmt->flags & WSI_WL_FMT_ALPHA) ||\n'
      '          !(disp_fmt->flags & WSI_WL_FMT_OPAQUE))\n'
      '         continue;\n',
