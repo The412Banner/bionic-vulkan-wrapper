@@ -215,6 +215,7 @@ PY2
 	apply_kgsl_poll_fix
 	apply_passthrough
 	apply_mali_switches
+	apply_subgroup_props
 }
 
 # Zero-timeout KGSL timestamp waits as real polls (banner/kgsl/banner_kgsl_poll.h has the why): the
@@ -337,6 +338,46 @@ patch("src/vulkan/wsi/wsi_common.c",
       "         wsi_signal_fence_for_image(")
 print("pipetto: Mali switches (BANNER_MALI_HIDE_EXTS / NO_SUBMIT_WAITS / NO_ACQUIRE_SIGNAL, default off) applied")
 PY4
+}
+
+# Subgroup properties. Pipetto's wrapper-25 (b63039a "wrapper: disable subgroup operations by Hugo")
+# reports supportedStages/supportedOperations = 0 for every driver, so games that require subgroups
+# quit: DOOM Eternal, "FATAL ERROR: Please update your driver: Could not find support for required
+# subgroup stages" (device test 2026-10-21; Turnip under the wrapper reports 0x3f/0x6ff on Adreno 750).
+# Keep the zeroing only for the vendor blobs (Qualcomm, ARM) and pass the driver's own values through
+# on Mesa drivers (Turnip, PanVK). BANNER_WRAPPER_NO_SUBGROUPS=1 zeroes them on every driver again.
+apply_subgroup_props(){
+	python3 - "$mesa" <<'PY5' || die "subgroup properties patch failed"
+import sys, os
+root = sys.argv[1]
+def patch(rel, old, new):
+    p = os.path.join(root, rel); s = open(p).read()
+    assert s.count(old) == 1, (rel, old[:60]); open(p, 'w').write(s.replace(old, new))
+rel = "src/vulkan/wrapper/wrapper_physical_device.c"
+patch(rel,
+      "   vk_foreach_struct(prop, pProperties->pNext) {\n",
+      "   const char *banner_no_sg = getenv(\"BANNER_WRAPPER_NO_SUBGROUPS\");\n"
+      "   const bool banner_zero_subgroups =\n"
+      "      pdevice->driver_properties.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY ||\n"
+      "      pdevice->driver_properties.driverID == VK_DRIVER_ID_ARM_PROPRIETARY ||\n"
+      "      (banner_no_sg && banner_no_sg[0] == '1');\n"
+      "   vk_foreach_struct(prop, pProperties->pNext) {\n")
+patch(rel,
+      "         vk11_prop->subgroupSupportedOperations = 0;\n"
+      "         vk11_prop->subgroupSupportedStages = 0;\n",
+      "         if (banner_zero_subgroups) {\n"
+      "            vk11_prop->subgroupSupportedOperations = 0;\n"
+      "            vk11_prop->subgroupSupportedStages = 0;\n"
+      "         }\n")
+patch(rel,
+      "         subgroup_prop->supportedOperations = 0;\n"
+      "         subgroup_prop->supportedStages = 0;\n",
+      "         if (banner_zero_subgroups) {\n"
+      "            subgroup_prop->supportedOperations = 0;\n"
+      "            subgroup_prop->supportedStages = 0;\n"
+      "         }\n")
+print("pipetto: subgroup properties passed through on Mesa drivers (blobs / BANNER_WRAPPER_NO_SUBGROUPS=1 zero them) applied")
+PY5
 }
 
 apply_ahb(){
