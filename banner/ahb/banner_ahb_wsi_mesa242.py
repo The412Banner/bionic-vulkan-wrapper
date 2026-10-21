@@ -308,7 +308,7 @@ banner_ahb_mode_changed(struct wsi_wl_swapchain *chain)
 }
 
 /* The AHardwareBuffer format a swapchain VkFormat can live in, 0 when there is none (gralloc has
- * no BGRA: those swapchains take the standard path, and the surface-format list hides them). */
+ * no BGRA: those swapchains take the standard path; see banner_ahb_hide_bgra for the list). */
 static uint32_t
 banner_ahb_format_for(VkFormat format)
 {
@@ -323,10 +323,52 @@ banner_ahb_format_for(VkFormat format)
    }
 }
 
+/* Whether the surface-format list leaves out the formats gralloc cannot hold (BGRA) while the
+ * compositor wants gralloc images. DXVK, VKD3D, Zink and WineD3D take RGBA when BGRA is not
+ * offered, so for them the list stays gralloc-only and their swapchains stay zero-copy. Other
+ * programs may require BGRA (DOOM Eternal quits with "Could not find required swap chain format"):
+ * they get it, after the gralloc formats, and a BGRA swapchain takes the standard (copy) path.
+ * BANNER_WSI_AHB_BGRA=1 always offers BGRA, =0 never does. */
 static bool
-banner_ahb_skip_format(const struct wsi_wl_display *display, VkFormat format)
+banner_ahb_hide_bgra(const struct wsi_device *wsi_device)
 {
-   return banner_ahb_want(display) && banner_ahb_format_for(format) == 0;
+   static int said;
+   const char *e = getenv("BANNER_WSI_AHB_BGRA");
+   if (e && e[0] == '1')
+      return false;
+   if (e && e[0] == '0')
+      return true;
+   VK_FROM_HANDLE(vk_physical_device, pdev, wsi_device->pdevice);
+   const char *eng = pdev && pdev->instance ? pdev->instance->app_info.engine_name : NULL;
+   char low[64] = "";
+   for (unsigned i = 0; eng && eng[i] && i < sizeof(low) - 1; i++)
+      low[i] = (eng[i] >= 'A' && eng[i] <= 'Z') ? eng[i] - 'A' + 'a' : eng[i];
+   bool hide = strstr(low, "dxvk") || strstr(low, "vkd3d") || strstr(low, "zink") || strstr(low, "wined3d");
+   if (!said) {
+      said = 1;
+      mesa_logi("banner-ahb: program engine \"%s\": BGRA surface formats %s", eng ? eng : "",
+                hide ? "hidden (gralloc formats only)" : "offered after the gralloc formats");
+   }
+   return hide;
+}
+
+static bool
+banner_ahb_skip_format(const struct wsi_wl_display *display, const struct wsi_device *wsi_device,
+                       VkFormat format)
+{
+   return banner_ahb_want(display) && banner_ahb_format_for(format) == 0 &&
+          banner_ahb_hide_bgra(wsi_device);
+}
+
+/* Two passes over the format list: with the gralloc mode on, the formats gralloc can hold come
+ * first (programs that take the first entry stay zero-copy), the rest second; otherwise the
+ * first pass lists everything in the compositor's order. */
+static bool
+banner_ahb_pass_skip(const struct wsi_wl_display *display, VkFormat format, int pass)
+{
+   if (!banner_ahb_want(display))
+      return pass != 0;
+   return (pass == 0) != (banner_ahb_format_for(format) != 0);
 }
 
 /* Native-handle sniff, the one Mesa's u_gralloc fallback uses (u_gralloc_fallback.c): a QTI
@@ -861,14 +903,22 @@ patch(os.path.join(wsi, 'wsi_common_wayland.c'), [
     ('   if (display->wl_syncobj)\n      wp_linux_drm_syncobj_manager_v1_destroy(display->wl_syncobj);\n',
      '   if (display->wl_syncobj)\n      wp_linux_drm_syncobj_manager_v1_destroy(display->wl_syncobj);\n'
      '   if (display->banner_ahb)\n      banner_ahb_v1_destroy(display->banner_ahb);\n', 1),
-    # surface formats: only what gralloc can hold, when the mode is on (both query variants)
+    # surface formats, when the mode is on: gralloc formats first, BGRA after them or hidden
+    # (banner_ahb_hide_bgra), both query variants
+    ('   struct wsi_wl_format *disp_fmt;\n'
+     '   u_vector_foreach(disp_fmt, &display.formats) {\n',
+     '   struct wsi_wl_format *disp_fmt;\n'
+     '   for (int banner_pass = 0; banner_pass < 2; banner_pass++)\n'
+     '   u_vector_foreach(disp_fmt, &display.formats) {\n', 2),
     ('      if (!(disp_fmt->flags & WSI_WL_FMT_ALPHA) ||\n'
      '          !(disp_fmt->flags & WSI_WL_FMT_OPAQUE))\n'
      '         continue;\n',
      '      if (!(disp_fmt->flags & WSI_WL_FMT_ALPHA) ||\n'
      '          !(disp_fmt->flags & WSI_WL_FMT_OPAQUE))\n'
      '         continue;\n'
-     '      if (banner_ahb_skip_format(&display, disp_fmt->vk_format))\n'
+     '      if (banner_ahb_skip_format(&display, wsi_device, disp_fmt->vk_format))\n'
+     '         continue;\n'
+     '      if (banner_ahb_pass_skip(&display, disp_fmt->vk_format, banner_pass))\n'
      '         continue;\n', 2),
     # implicit acquire: on a gralloc chain, prefer a free image the display is done with
     ('      /* Try to find a free image. */\n'
