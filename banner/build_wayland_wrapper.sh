@@ -217,6 +217,7 @@ PY2
 	apply_mali_switches
 	apply_subgroup_props
 	apply_mali_inline_shaders
+	apply_mali_bcn
 }
 
 # Zero-timeout KGSL timestamp waits as real polls (banner/kgsl/banner_kgsl_poll.h has the why): the
@@ -346,6 +347,13 @@ PY4
 # has the why. Same approach as GameNative/mesa PR #35 (Utkarsh Dalal). Off switch BANNER_WRAPPER_INLINE_SHADERS=0.
 apply_mali_inline_shaders(){
 	python3 "$repo/banner/mali/banner_mali_inline_shaders.py" "$mesa" || die "Mali inline shaders patch failed"
+}
+
+# BCn emulation fixes where the wrapper unpacks BC textures itself (the Arm Mali driver): vkCmdCopyBufferToImage2,
+# vkGetDeviceImageMemoryRequirements, vkBindBufferMemory2, the game's own mappings, staging freed per command buffer.
+# banner/mali/banner_mali_bcn.py has the why. Not installed on Turnip (no BCn emulation there).
+apply_mali_bcn(){
+	python3 "$repo/banner/mali/banner_mali_bcn.py" "$mesa" || die "BCn emulation fixes patch failed"
 }
 
 # Subgroup properties. Pipetto's wrapper-25 (b63039a "wrapper: disable subgroup operations by Hugo")
@@ -586,6 +594,11 @@ package_check(){
 			grep -q "$sym" "$so" || fail "Mali inline shaders string missing: $sym"
 		done
 		log "Mali inline shaders (BANNER_WRAPPER_INLINE_SHADERS): in"
+		for sym in "wrapper-bcn: BCn emulation fixes on" "wrapper-bcn: BCn textures unpacked on the CPU for this driver" \
+		           "wrapper-bcn: memory requirements answered for the unpacked image"; do
+			grep -q "$sym" "$so" || fail "BCn emulation fixes string missing: $sym"
+		done
+		log "BCn emulation fixes (CopyBufferToImage2, memory requirements, staging per command buffer): in"
 		grep -q "wrapper-dispatch: pass-through" "$so" || fail "pass-through dispatch missing (banner_passthrough.c not built in?)"
 		grep -q "wrapper-dispatch: full wrapping" "$so" || fail "pass-through dispatch: full-wrapping fallback line missing"
 		grep -q "BANNER_WRAPPER_PASSTHROUGH" "$so" || fail "BANNER_WRAPPER_PASSTHROUGH switch missing"
