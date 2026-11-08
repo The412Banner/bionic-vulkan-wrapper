@@ -476,3 +476,10 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   locally (Mesa generated headers). CI run 42465607544 (headSha ceadac30): success x4; pipetto-ahb log "zero-copy copy
   route (Arm driver, BANNER_WSI_AHB_BLIT): in", no warnings in WSI/zero-copy sources. pipetto-ahb .so sha256
   5543ca30... -> Bannerlator fix/wayland-mali-ahb-blit beae3c81. NOT device-tested.
+- 2026-11-08 (later), f65c79d9 (user: "yes go ahead, add it and build"): banner_ahb_buffer_fd() -- both zero-copy create_mem
+  paths take the gralloc handle's first fd (data[0] first) whose /proc/self/fd link names a dma-buf of at least
+  rowPitch*height bytes, data[0] as before when none is; one "banner-ahb: gralloc handle fds: ..." line per process.
+  QTI: data[0] passes (metadata fd too small), so Adreno is unchanged. Local test (Elite, PRoot, real kernel): handle
+  [memfd 4 KiB, dma-heap dma-buf 3.5 MiB, memfd 8 MiB] -> picked [1]; NULL/empty -> -1; gcc -Wall -Wextra -fsanitize=undefined
+  clean. CI 42466517534 (headSha f65c79d9) success x4, new build check line "in", no new warnings; pipetto-ahb .so sha256
+  ef609595... -> Bannerlator fix/wayland-mali-ahb-blit f448549a. NOT device-tested.
