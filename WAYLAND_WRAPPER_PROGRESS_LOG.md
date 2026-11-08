@@ -420,3 +420,31 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
 - Pass-through forwards vkQueueSubmit untouched, which would bypass BANNER_MALI_NO_SUBMIT_WAITS. banner_pt_device_init now
   keeps full wrapping when that switch is on (logged: "wrapper-dispatch: full wrapping (BANNER_MALI_NO_SUBMIT_WAITS ...)").
 - Workflow runs on this branch too. NOT device-tested.
+
+## 2026-11-08 -- Mali: inline pipeline shaders through the SPIR-V fixups (branch banner/wayland-wsi-mali-inline-shaders, CI only)
+
+- Why: Bannerlator's Wayland "System" pick on an Arm Mali GPU (BL main 78000ba3, 11-08) puts this adapter on the phone's
+  own Mali driver. The Pipetto tree rewrites SPIR-V for that driver only in wrapper_CreateShaderModule
+  (OpConstantComposite -> OpSpecConstantComposite, ClipDistance / CullDistance removed). Current DXVK hands every shader over
+  inline (module = VK_NULL_HANDLE, VkShaderModuleCreateInfo in the stage pNext; doitsujin/dxvk src/dxvk/dxvk_shader.cpp:97-103),
+  so none of its shaders got the rewrite. Lead from wallentx's DroidDeck system-vulkan doc (10-23); upstream fix of the same
+  thing: GameNative/mesa PR #35, Utkarsh Dalal, 0fc46418 (10-25).
+- CORRECTION to the 10-23 notes: the other item from that doc ("the BC decoder leaves the game's compute state changed") is in
+  this repository's own leegao tree (src/vulkan/wrapper/wrapper_device.c:1423-1442), NOT in the Pipetto tree Bannerlator ships:
+  Pipetto's BCn path decodes on the CPU into a staging buffer (wrapper_CmdCopyBufferToImage), no compute pipeline bound. Nothing
+  to fix there for the shipped adapter.
+- Change (ffc3029d): banner/mali/banner_mali_inline_shaders.py, applied after the subgroup patch in the Pipetto legs:
+  wrapper_CreateGraphicsPipelines / wrapper_CreateComputePipelines. On VK_DRIVER_ID_ARM_PROPRIETARY each inline stage gets a
+  module from wrapper_CreateShaderModule and its VkShaderModuleCreateInfo is unlinked (structures ahead of it are copied:
+  debug name, pipeline robustness, required subgroup size; anything else ahead = module set, info left, one stderr line);
+  modules destroyed after the driver call. Graphics pipeline libraries without shader subsets: pStages not read. Every other
+  driver: straight to the driver. Off switch BANNER_WRAPPER_INLINE_SHADERS=0; stderr "wrapper-mali: inline pipeline shaders
+  through the SPIR-V fixups: on|off (...)". Also frees wrapper_CreateShaderModule's patched SPIR-V copy (leaked per module).
+  package_check greps the two strings + the switch.
+- Branch name: banner/... (not fix/...) so the workflow's push filter "banner/wayland-wsi-*" builds it, as for every earlier
+  adapter branch.
+- Local checks (Pocket FIT Elite, PRoot): all Pipetto-leg patches dry-applied in order on ecdd0da8 (+ ahb); the patched lines
+  compiled with gcc -Wall -Wextra (+ -Werror for implicit decls / pointer types / qualifiers, UBSan) against a fake driver:
+  11/11 on ARM (copies only, caller structures untouched, 2 modules made = 2 destroyed, library pStages untouched, compute),
+  pass-through on Qualcomm and with BANNER_WRAPPER_INLINE_SHADERS=0. ASan does not run under PRoot.
+- CI: run 42451258079 (headSha ffc3029d). NOT device-tested (no Mali device here).
