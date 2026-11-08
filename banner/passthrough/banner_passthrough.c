@@ -79,6 +79,8 @@ banner_pt_device_init(struct wrapper_device *device)
       why = "BANNER_WRAPPER_PASSTHROUGH=0";
    else if (device->physical->emulate_bcn > 0)
       why = "BCn emulation is active for this device, so command buffers stay wrapped";
+   else if (device->physical->driver_properties.driverID == VK_DRIVER_ID_ARM_PROPRIETARY)
+      why = "the Arm Mali driver: command buffers stay wrapped (pass-through is untested there)";
    else if (banner_mali_flags & BANNER_MALI_NO_SUBMIT_WAITS)
       why = "BANNER_MALI_NO_SUBMIT_WAITS drops wait semaphores in the wrapped vkQueueSubmit";
    device->banner_passthrough = (why == NULL);

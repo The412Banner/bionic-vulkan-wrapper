@@ -595,7 +595,8 @@ package_check(){
 		done
 		log "Mali inline shaders (BANNER_WRAPPER_INLINE_SHADERS): in"
 		for sym in "wrapper-bcn: BCn emulation fixes on" "wrapper-bcn: BCn textures unpacked on the CPU for this driver" \
-		           "wrapper-bcn: memory requirements answered for the unpacked image"; do
+		           "wrapper-bcn: memory requirements answered for the unpacked image" \
+		           "wrapper-bcn: the driver has BCn itself" "pass-through is untested there"; do
 			grep -q "$sym" "$so" || fail "BCn emulation fixes string missing: $sym"
 		done
 		log "BCn emulation fixes (CopyBufferToImage2, memory requirements, staging per command buffer): in"

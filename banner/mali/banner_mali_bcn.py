@@ -20,6 +20,9 @@
 # region are unpacked correctly; the staging memory is host-coherent (or flushed).
 #  5. vkBindBufferMemory2 (vkd3d-proton's bind) was not seen, so the wrapper did not know which memory a
 #     D3D12 upload buffer lives in and could not read it.
+#  6. The Arm driver can have BCn of its own (a BCn shim in a custom build, e.g. kirimu's): then the
+#     default ("auto", 3) leaves BCn to the driver, as it already does for Turnip and the newer Qualcomm
+#     driver. WRAPPER_EMULATE_BCN=2 still forces emulation, =0 forces it off.
 # Installed only where the wrapper emulates BCn (emulate_bcn >= 2: its default for every driver but Turnip
 # and the newer Qualcomm driver, i.e. the Arm Mali driver and PanVK through the adapter, unless
 # WRAPPER_EMULATE_BCN says otherwise). On Turnip (Adreno) nothing is installed and nothing changes.
@@ -670,8 +673,36 @@ banner_bcn_install(struct wrapper_device *device)
 }
 '''
 
+# 6. "auto" leaves BCn to an Arm driver that reports textureCompressionBC itself (base_supported_features
+# is the driver's own, copied before the wrapper turns the feature on).
+PDEV = "src/vulkan/wrapper/wrapper_physical_device.c"
+patch(PDEV,
+      "         } else if (pdevice->driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP) {\n"
+      "            wrapper_emulate_bcn = 0;\n"
+      "         }\n"
+      "      }\n",
+      "         } else if (pdevice->driver_properties.driverID == VK_DRIVER_ID_MESA_TURNIP) {\n"
+      "            wrapper_emulate_bcn = 0;\n"
+      "         } else if (pdevice->driver_properties.driverID == VK_DRIVER_ID_ARM_PROPRIETARY &&\n"
+      "                    pdevice->base_supported_features.textureCompressionBC) {\n"
+      "            /* Bannerlator (banner/mali/banner_mali_bcn.py): this Arm driver has BCn itself (a BCn shim):\n"
+      "             * the textures go to it as they are. WRAPPER_EMULATE_BCN=2 still forces emulation. */\n"
+      "            static bool banner_said_native_bcn;\n"
+      "            wrapper_emulate_bcn = 0;\n"
+      "            if (!banner_said_native_bcn) {\n"
+      "               banner_said_native_bcn = true;\n"
+      "               fprintf(stderr, \"wrapper-bcn: the driver has BCn itself (%s %s): BCn emulation off \"\n"
+      "                       \"(WRAPPER_EMULATE_BCN=2 forces it on)\\n\",\n"
+      "                       pdevice->driver_properties.driverName, pdevice->driver_properties.driverInfo);\n"
+      "            }\n"
+      "         }\n"
+      "      }\n")
+s = open(os.path.join(root, PDEV)).read()
+if "#include <stdio.h>" not in s:
+    open(os.path.join(root, PDEV), "w").write("#include <stdio.h>\n" + s)
+
 p = os.path.join(root, DEV)
 s = open(p).read()
 assert "banner_bcn_install(struct wrapper_device *device)\n{" not in s
 open(p, "w").write(s + CODE)
-print("BCn emulation fixes (CopyBufferToImage2, memory requirements, BindBufferMemory2, game mappings, staging per command buffer) applied")
+print("BCn emulation fixes (CopyBufferToImage2, memory requirements, BindBufferMemory2, game mappings, staging per command buffer; native BCn on the Arm driver used when it has it) applied")
