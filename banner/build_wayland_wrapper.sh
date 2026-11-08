@@ -601,6 +601,8 @@ package_check(){
 		grep -q "BANNER_WSI_AHB_BLIT" "$so" || fail "copy route switch BANNER_WSI_AHB_BLIT missing"
 		grep -q "each frame copied in from the driver's own image" "$so" || fail "copy route (Arm driver) line missing"
 		log "zero-copy copy route (Arm driver, BANNER_WSI_AHB_BLIT): in"
+		grep -q "banner-ahb: gralloc handle fds:" "$so" || fail "gralloc buffer-fd pick line missing"
+		log "gralloc buffer fd picked by /proc/self/fd (not data[0] blindly): in"
 		grep -q "banner-ahb: client render fences on" "$so" || fail "client render fences missing (banner_ahb_client_fence.py not in)"
 		grep -q "BANNER_WSI_NO_CLIENT_FENCE" "$so" || fail "BANNER_WSI_NO_CLIENT_FENCE switch missing"
 		grep -q "fence needs" "$so" || fail "client render fences: version-3 gate line missing"

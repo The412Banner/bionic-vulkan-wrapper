@@ -433,6 +433,50 @@ banner_ahb_dump_handle(const struct banner_native_handle *h, int req)
              banner_ahb_req_name[req], h->numFds, h->numInts, pos ? ints : " none");
 }
 
+/* The fd of a gralloc handle that holds the pixels. QTI gralloc puts the buffer's dma-buf first and this
+ * code took data[0] on every gralloc; a tester reports that on MediaTek/Mali gralloc data[0] is not the
+ * plane's dma-buf (2026-11-08, not verified here). So: the first fd, data[0] first, that is a dma-buf (its
+ * /proc/self/fd link names dmabuf) of at least `need` bytes -- data[0] on QTI, where nothing changes --
+ * and data[0] as before when none is. One line per process describes the handle's fds and the pick. */
+static int
+banner_ahb_buffer_fd(const struct banner_native_handle *h, uint64_t need)
+{
+   static bool said;
+   if (!h || h->numFds < 1)
+      return -1;
+   int pick = -1;
+   char desc[512] = "";
+   size_t pos = 0;
+   for (int i = 0; i < h->numFds && i < 8; i++) {
+      const int fd = h->data[i];
+      char path[32], link[96];
+      snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+      ssize_t n = readlink(path, link, sizeof(link) - 1);
+      link[n > 0 ? n : 0] = '\0';
+      const off_t size = lseek(fd, 0, SEEK_END);
+      if (size >= 0)
+         lseek(fd, 0, SEEK_SET);
+      const bool ok = strstr(link, "dmabuf") != NULL && size > 0 && (uint64_t)size >= need;
+      if (ok && pick < 0)
+         pick = i;
+      if (pos < sizeof(desc)) {
+         int w = snprintf(desc + pos, sizeof(desc) - pos, "%s[%d] %.40s %lld B%s", i ? ", " : "", i,
+                          link[0] ? link : "?", (long long)size, ok ? " dma-buf" : "");
+         if (w > 0)
+            pos += (size_t)w;
+      }
+   }
+   const bool none = pick < 0;
+   if (none)
+      pick = 0;
+   if (!said) {
+      said = true;
+      mesa_logi("banner-ahb: gralloc handle fds: %s -> buffer fd [%d]%s", desc, pick,
+                none ? " (none is a dma-buf of the image's size: [0] as before)" : "");
+   }
+   return h->data[pick];
+}
+
 /* Add one reason to a chain's "why linear" text (NULL text = nobody is collecting). */
 static void __attribute__((format(printf, 3, 4)))
 banner_ahb_why(char *why, size_t size, const char *fmt, ...)
@@ -915,7 +959,11 @@ banner_ahb_create_mem(const struct wsi_swapchain *wsi_chain,
       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
    }
    const struct banner_native_handle *h = banner_nw.getNativeHandle(ahb);
-   int fd = h->data[0];
+   int fd = banner_ahb_buffer_fd(h, (uint64_t)chain->banner.layout.rowPitch * chain->extent.height);
+   if (fd < 0) {
+      banner_nw.release(ahb);
+      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   }
 
    VkMemoryFdPropertiesKHR fd_props = { .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR };
    VkResult result = device->dispatch_table.GetMemoryFdPropertiesKHR(
@@ -1037,8 +1085,9 @@ banner_ahb_create_mem_blit(const struct wsi_swapchain *wsi_chain,
       banner_nw.release(ahb);
       return result;
    }
-   const struct banner_native_handle *h = banner_nw.getNativeHandle(ahb);
-   image->dma_buf_fd = (h && h->numFds >= 1) ? os_dupfd_cloexec(h->data[0]) : -1;
+   const int buf_fd = banner_ahb_buffer_fd(banner_nw.getNativeHandle(ahb),
+                                           (uint64_t)chain->banner.layout.rowPitch * chain->extent.height);
+   image->dma_buf_fd = buf_fd >= 0 ? os_dupfd_cloexec(buf_fd) : -1;
    if (image->dma_buf_fd < 0) {
       banner_nw.release(ahb);
       return VK_ERROR_OUT_OF_HOST_MEMORY;
