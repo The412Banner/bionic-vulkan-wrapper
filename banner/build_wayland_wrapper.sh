@@ -216,6 +216,7 @@ PY2
 	apply_passthrough
 	apply_mali_switches
 	apply_subgroup_props
+	apply_mali_inline_shaders
 }
 
 # Zero-timeout KGSL timestamp waits as real polls (banner/kgsl/banner_kgsl_poll.h has the why): the
@@ -338,6 +339,13 @@ patch("src/vulkan/wsi/wsi_common.c",
       "         wsi_signal_fence_for_image(")
 print("pipetto: Mali switches (BANNER_MALI_HIDE_EXTS / NO_SUBMIT_WAITS / NO_ACQUIRE_SIGNAL, default off) applied")
 PY4
+}
+
+# Inline pipeline shaders (VkShaderModuleCreateInfo in a stage's pNext, as current DXVK passes them) through
+# the shader-module SPIR-V fixups the wrapper runs on the Arm Mali driver; banner/mali/banner_mali_inline_shaders.py
+# has the why. Same approach as GameNative/mesa PR #35 (Utkarsh Dalal). Off switch BANNER_WRAPPER_INLINE_SHADERS=0.
+apply_mali_inline_shaders(){
+	python3 "$repo/banner/mali/banner_mali_inline_shaders.py" "$mesa" || die "Mali inline shaders patch failed"
 }
 
 # Subgroup properties. Pipetto's wrapper-25 (b63039a "wrapper: disable subgroup operations by Hugo")
@@ -573,6 +581,11 @@ package_check(){
 			grep -q "$sym" "$so" || fail "Mali switch string missing: $sym"
 		done
 		log "Mali switches (default off): in"
+		for sym in BANNER_WRAPPER_INLINE_SHADERS "wrapper-mali: inline pipeline shaders through the SPIR-V fixups" \
+		           "wrapper-mali: inline pipeline shaders lowered to shader modules"; do
+			grep -q "$sym" "$so" || fail "Mali inline shaders string missing: $sym"
+		done
+		log "Mali inline shaders (BANNER_WRAPPER_INLINE_SHADERS): in"
 		grep -q "wrapper-dispatch: pass-through" "$so" || fail "pass-through dispatch missing (banner_passthrough.c not built in?)"
 		grep -q "wrapper-dispatch: full wrapping" "$so" || fail "pass-through dispatch: full-wrapping fallback line missing"
 		grep -q "BANNER_WRAPPER_PASSTHROUGH" "$so" || fail "BANNER_WRAPPER_PASSTHROUGH switch missing"
