@@ -486,3 +486,30 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
 - 2026-11-08 ~06:07 EST: Bannerlator build-artifacts 42467072138 (headSha f448549a, this adapter's ef609595... .so) success x4
   (pubg after 3 re-runs: GitHub release-download 504s in "Fetch dxvk-nvapi"); 4 APKs staged in /sdcard/Download; posted to
   Mali testers in BannerHub (#winlator-general reply to gtaforever00 + #general-mali-and-support). NOT device-tested.
+
+## 2026-11-08 -- BCn emulation fixes for the Arm Mali driver (branch banner/wayland-wsi-mali-ahb-blit e7402de6, CI only)
+
+- Why: gtaforever00 (Mali-G77, Arm driver 54.1.0, Bannerlator test build 2 f448549a) got a picture on Wayland with
+  System (zero-copy copy route works: Megabonk 263-363 zero-copy frames per 10 s, Hades II 52-57 fps), but striped
+  textures (Megabonk ground/trees, Hades II logo) and Hades II failing when a run starts. vkd3d-proton.log: 355x
+  "Heap too small for the texture (heap=33554432, offset=33030144, size=1397760)", "fmt #61" = hex (resource.c:4740
+  prints %x) = DXGI 97 BC7_TYPELESS, 512x512 6 levels = 349440 bytes compressed, 1397760 as RGBA8 (4x).
+- Causes in the Pipetto tree (ecdd0da8): BCn is unpacked on the CPU only in wrapper_CmdCopyBufferToImage (v1);
+  DXVK records vkCmdCopyBufferToImage2 (dxvk_cmdlist.h:760), vkd3d-proton too -> raw BC bytes copied into the
+  RGBA8 image. vkGetDeviceImageMemoryRequirements not intercepted -> compressed size while vkCreateImage makes the
+  unpacked image. vkBindBufferMemory2 (vkd3d memory.c:1661) not tracked -> upload memory unknown. The wrapper mapped
+  the game's (persistently mapped) upload memory again and unmapped it. Staging buffers were attached to wcb->fence,
+  which is set at submit (after recording) -> never freed under DXVK/vkd3d.
+- Change (e7402de6, banner/mali/banner_mali_bcn.py + apply_mali_bcn + build string checks): hooks in the device's
+  dispatch table, installed only when emulate_bcn >= 2 (pass-through is already off then, banner_passthrough.c:80):
+  CmdCopyBufferToImage2 (shared upload with v1), GetDeviceImageMemoryRequirements (same substitution as CreateImage,
+  the game's format list restored after), BindBufferMemory2, Map/Map2/Unmap/Unmap2/FreeMemory (game mappings
+  tracked; the upload reads through them, maps only unmapped memory), Begin/ResetCommandBuffer, ResetCommandPool,
+  FreeCommandBuffers, DestroyCommandPool (per-command-buffer staging freed). Unpack honours bufferRowLength /
+  bufferImageHeight, pads extents to whole blocks (no writes past the staging buffer on small mips), handles
+  layers x depth slices; staging memory host-coherent or flushed. Turnip: emulate_bcn 0 -> nothing installed.
+- Local: whole Pipetto patch sequence dry-applied; unpack code vs a direct bcdec decode 24/24 (BC1/BC7/BC4, padded
+  rows, 1x1..512x512, 1-6 slices), UBSan, guard bytes intact. CI 42507509383 (headSha e7402de6) success x4,
+  pipetto-ahb log "BCn emulation fixes (...): in", same 7 warnings as before (none in wrapper code), undefined
+  symbols unchanged; .so sha256 f22c1462... -> Bannerlator fix/wayland-mali-ahb-blit 884658a3 (build-artifacts
+  42508013651). NOT device-tested.
