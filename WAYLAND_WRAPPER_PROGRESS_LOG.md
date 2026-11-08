@@ -513,3 +513,12 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   pipetto-ahb log "BCn emulation fixes (...): in", same 7 warnings as before (none in wrapper code), undefined
   symbols unchanged; .so sha256 f22c1462... -> Bannerlator fix/wayland-mali-ahb-blit 884658a3 (build-artifacts
   42508013651). NOT device-tested.
+- 2026-11-08 ~13:20 EST, 1051d023 (user: "post the tip and build 4"): gtaforever00 says kirimu's Arm driver build has
+  native BCn through a shim and his Winlator tests run with BCn emulation off. Auto (WRAPPER_EMULATE_BCN unset = 3) now
+  leaves BCn to VK_DRIVER_ID_ARM_PROPRIETARY when the driver's own features (base_supported_features, copied before the
+  wrapper forces textureCompressionBC) report it; one "wrapper-bcn: the driver has BCn itself" line; PanVK unchanged;
+  =2 still forces emulation. banner_passthrough.c: the Arm driver keeps the wrapped dispatch (pass-through turns on
+  whenever emulate_bcn == 0 and was only run on Adreno). Tip posted to him meanwhile: WRAPPER_EMULATE_BCN=0
+  BANNER_WRAPPER_PASSTHROUGH=0 on build 3. CI 42509398943 success x4, 7 warnings (same), undefined symbols unchanged;
+  .so sha256 74eb8eb1... -> Bannerlator fix/wayland-mali-ahb-blit bdc3b79d (build-artifacts 42509827693). Build 3 (e7402de6
+  -> BL 884658a3, run 42508013651) green x4 + staged + posted. NOT device-tested.
