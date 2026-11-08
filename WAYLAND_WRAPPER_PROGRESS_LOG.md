@@ -448,3 +448,31 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   11/11 on ARM (copies only, caller structures untouched, 2 modules made = 2 destroyed, library pStages untouched, compute),
   pass-through on Qualcomm and with BANNER_WRAPPER_INLINE_SHADERS=0. ASan does not run under PRoot.
 - CI: run 42451258079 (headSha ffc3029d). NOT device-tested (no Mali device here).
+
+## 2026-11-08 -- Mali: zero-copy copy route on the Arm driver (branch banner/wayland-wsi-mali-ahb-blit, off the inline-shader branch, CI only)
+
+- Why: tester logs (gtaforever00, Retroid Pocket 4 Pro, Mali-G77, Arm driver 54.1.0, BL main build with adapter c572b590)
+  on Wayland + "System": (1) zero-copy off: vkGetMemoryFdKHR(DMA_BUF) returned an fd libwayland could not dup
+  ("error marshalling arguments for add: dup failed: Bad file descriptor", zwp_linux_buffer_params_v1.add) -> fatal
+  wl_display error -> Hades II sound only, Megabonk "Failed to read events from the compositor, terminating process";
+  (2) zero-copy on: gralloc buffers allocated (Arm gralloc handle, 3 fds / 76 ints, unreadable -> CPU-linear), then
+  "banner-ahb: importing the gralloc dma-buf failed (-2)" on every swapchain (Megabonk 1071x, Hades 2783x).
+- CORRECTION to my earlier notes: the shipped tree (Pipetto ecdd0da8) does NOT set needs_blit for the Arm driver (only
+  WRAPPER_BLIT=1 / MESA_VK_WSI_DEBUG=blit, wsi_common.c:100-101); the leegao tree does (wsi_common.c:148). Pipetto's X11
+  AHB path is wsi_common_android.c and copies only with needs_blit; otherwise it imports the AHB directly.
+- Change (ceadac30, banner/ahb/banner_ahb_wsi_mesa242.py): "copy route". On the Arm driver (driverID asked once through
+  pdev->dispatch_table.GetPhysicalDeviceProperties2 with VkPhysicalDeviceDriverProperties; WRAPPER_DRIVER_ID only rewrites
+  the Vulkan 1.2 struct, wrapper_physical_device.c:505-508) or with needs_blit, a gralloc chain: one CPU-linear probe
+  buffer bound once as a test; ext_mem + drm_mod_list unlinked from the image create info, tiling OPTIMAL, blit.type =
+  IMAGE_BLIT + wsi_configure_image_blit_image; create_mem = device memory for the program's image + a LINEAR
+  TRANSFER_DST image bound to the AHB (VkImportAndroidHardwareBufferInfoANDROID, dedicated), dma_buf_fd = dup(data[0])
+  for zwp_linux_dmabuf_v1 + banner_ahb_v1.attach as before. BANNER_WSI_AHB_BLIT=1 any driver / =0 never. Build checks
+  for the new strings. Other drivers: unchanged code path (precondition rewritten equivalently).
+- Known limits: Pipetto's IMAGE_BLIT is vkCmdBlitImage NEAREST (leegao: vkCmdCopyImage), so an _SRGB swapchain is
+  converted into gralloc's UNORM (DXVK took R8G8B8A8_UNORM in the logs). One GPU copy per frame. A tester (delta5281,
+  11-08 04:05 EST) says on MediaTek/Mali gralloc data[0] is not the plane's dma-buf: the copy route's driver import does
+  not use it, but the fd handed to the compositor and the dma-buf fence ioctls do (NOT verified, no such device).
+- Local: patch dry-applied to both trees' WSI (leegao worktree + Pipetto ecdd0da8 files), anchors OK. Not compiled
+  locally (Mesa generated headers). CI run 42465607544 (headSha ceadac30): success x4; pipetto-ahb log "zero-copy copy
+  route (Arm driver, BANNER_WSI_AHB_BLIT): in", no warnings in WSI/zero-copy sources. pipetto-ahb .so sha256
+  5543ca30... -> Bannerlator fix/wayland-mali-ahb-blit beae3c81. NOT device-tested.
