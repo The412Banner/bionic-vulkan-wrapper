@@ -87,6 +87,25 @@ ever cost UBWC, never produce a buffer the driver reads with the wrong layout. E
 line: "on gralloc buffers: UBWC (QCOM_COMPRESSED), stride N px", or "linear, stride N px (no UBWC:
 <why>)".
 
+Copy route (the Arm Mali driver). The Arm driver neither exports a usable dma-buf from its own
+swapchain memory (vkGetMemoryFdKHR succeeds, the fd it returns makes libwayland's dup fail) nor imports
+gralloc's dma-buf fd (vkAllocateMemory with VkImportMemoryFdInfoKHR: VK_ERROR_OUT_OF_DEVICE_MEMORY);
+both seen on a Mali-G77, driver 54.1.0, Retroid Pocket 4 Pro, 2026-11-08. wsi_device_init sets
+needs_blit for that driver in the leegao tree, whose X11 path then presents by copying each frame into
+an image bound to an AHardwareBuffer (wsi_create_ahardware_buffer_blit_context; the Pipetto tree does
+the same only with WRAPPER_BLIT=1, wsi_common_android.c). A gralloc chain on the Arm driver (its
+driverID, asked through the wrapper's physical device) or with needs_blit does the same: the program
+renders into ordinary driver images (no export, no modifier), the present copies each frame (Mesa's
+IMAGE_BLIT: vkCmdCopyImage in the leegao tree, vkCmdBlitImage NEAREST in the Pipetto tree) into a
+linear TRANSFER_DST image bound to the gralloc buffer itself (VkImportAndroidHardwareBufferInfoANDROID),
+and that buffer reaches the compositor exactly as on the direct route: its dma-buf through
+zwp_linux_dmabuf_v1, the AHardwareBuffer through banner_ahb_v1.attach. Always the CPU-linear request,
+so the dma-buf is laid out the way it is described. One GPU copy per frame. Known limit: the target has
+gralloc's UNORM format, so an _SRGB swapchain blitted by the Pipetto tree is converted on the way
+(colours may look off); DXVK and vkd3d-proton take R8G8B8A8_UNORM here. BANNER_WSI_AHB_BLIT=1 takes the
+copy route on any driver (a test on Adreno), =0 never takes it. Its line: "on gralloc buffers: linear,
+stride N px, each frame copied in from the driver's own image (<why>)", with the swapchain's format.
+
 Written against exact source text rather than diff context so it survives Mesa line drift; every
 anchor is asserted, so a Mesa where the WSI changed shape fails the build instead of shipping a
 driver without the feature.
@@ -536,6 +555,204 @@ banner_ahb_set_layout(struct wsi_wl_swapchain *chain, bool on)
 static VkResult banner_ahb_create_mem(const struct wsi_swapchain *chain,
                                       const struct wsi_image_info *info,
                                       struct wsi_image *image);
+static VkResult banner_ahb_create_mem_blit(const struct wsi_swapchain *chain,
+                                           const struct wsi_image_info *info,
+                                           struct wsi_image *image);
+
+/* Is the driver under the wrapper Arm's? Asked once through the physical device's own dispatch
+ * (wrapper_GetPhysicalDeviceProperties2), with VkPhysicalDeviceDriverProperties: the wrapper passes
+ * its driverID through (WRAPPER_DRIVER_ID only rewrites the Vulkan 1.2 properties struct). */
+static bool
+banner_ahb_driver_is_arm(const struct wsi_device *wsi)
+{
+   static int arm = -1;
+   if (arm >= 0)
+      return arm == 1;
+   arm = 0;
+   VK_FROM_HANDLE(vk_physical_device, pdev, wsi->pdevice);
+   if (pdev && pdev->dispatch_table.GetPhysicalDeviceProperties2) {
+      VkPhysicalDeviceDriverProperties drv = {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+      };
+      VkPhysicalDeviceProperties2 p2 = {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+         .pNext = &drv,
+      };
+      pdev->dispatch_table.GetPhysicalDeviceProperties2(wsi->pdevice, &p2);
+      arm = drv.driverID == VK_DRIVER_ID_ARM_PROPRIETARY ? 1 : 0;
+   }
+   return arm == 1;
+}
+
+/* The copy route ("Copy route" in the script header): the Arm driver, or a driver told to present by
+ * blit (wsi->needs_blit: WRAPPER_BLIT=1, MESA_VK_WSI_DEBUG=blit, and in the leegao tree the Arm driver
+ * itself), unless BANNER_WSI_AHB_BLIT says otherwise: =1 takes it on any driver, =0 never. */
+static bool
+banner_ahb_blit_route(const struct wsi_device *wsi)
+{
+   const char *e = getenv("BANNER_WSI_AHB_BLIT");
+   if (e && e[0] == '1')
+      return true;
+   if (e && e[0] == '0')
+      return false;
+   return wsi->needs_blit || banner_ahb_driver_is_arm(wsi);
+}
+
+/* Take `node` out of a create info's pNext chain (no-op when it is not in it). */
+static void
+banner_ahb_unlink(VkImageCreateInfo *create, const void *node)
+{
+   VkBaseOutStructure *prev = (VkBaseOutStructure *)create;
+   for (VkBaseOutStructure *n = prev->pNext; n; prev = n, n = n->pNext) {
+      if (n == (const VkBaseOutStructure *)node) {
+         prev->pNext = n->pNext;
+         return;
+      }
+   }
+}
+
+/* The copy route's target for one gralloc buffer: a linear TRANSFER_DST image bound to the
+ * AHardwareBuffer itself, as wsi_create_ahardware_buffer_blit_context makes it for X11. On failure
+ * nothing is left behind and both outputs are VK_NULL_HANDLE. */
+static VkResult
+banner_ahb_blit_target(const struct wsi_wl_swapchain *chain, AHardwareBuffer *ahb,
+                       VkImage *out_image, VkDeviceMemory *out_mem)
+{
+   const struct wsi_device *wsi = chain->base.wsi;
+   const VkDevice dev = chain->base.device;
+   *out_image = VK_NULL_HANDLE;
+   *out_mem = VK_NULL_HANDLE;
+
+   VkAndroidHardwareBufferFormatPropertiesANDROID fmt = {
+      .sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_FORMAT_PROPERTIES_ANDROID,
+   };
+   VkAndroidHardwareBufferPropertiesANDROID props = {
+      .sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID,
+      .pNext = &fmt,
+   };
+   VkResult r = wsi->GetAndroidHardwareBufferPropertiesANDROID(dev, ahb, &props);
+   if (r != VK_SUCCESS)
+      return r;
+   if (fmt.format == VK_FORMAT_UNDEFINED || !props.memoryTypeBits)
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
+   const VkExternalMemoryImageCreateInfo ext = {
+      .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+      .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID,
+   };
+   const VkImageCreateInfo ci = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .pNext = &ext,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = fmt.format,
+      .extent = { chain->extent.width, chain->extent.height, 1 },
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .tiling = VK_IMAGE_TILING_LINEAR,
+      .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+   };
+   VkImage img = VK_NULL_HANDLE;
+   r = wsi->CreateImage(dev, &ci, &chain->base.alloc, &img);
+   if (r != VK_SUCCESS)
+      return r;
+
+   const VkMemoryDedicatedAllocateInfo dedicated = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+      .image = img,
+   };
+   const VkImportAndroidHardwareBufferInfoANDROID import = {
+      .sType = VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID,
+      .pNext = &dedicated,
+      .buffer = ahb,
+   };
+   const VkMemoryAllocateInfo alloc_info = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .pNext = &import,
+      .allocationSize = props.allocationSize,
+      .memoryTypeIndex = wsi_select_device_memory_type(wsi, props.memoryTypeBits),
+   };
+   VkDeviceMemory mem = VK_NULL_HANDLE;
+   r = wsi->AllocateMemory(dev, &alloc_info, &chain->base.alloc, &mem);
+   if (r != VK_SUCCESS)
+      mem = VK_NULL_HANDLE;
+   else
+      r = wsi->BindImageMemory(dev, img, mem, 0);
+   if (r != VK_SUCCESS) {
+      wsi->DestroyImage(dev, img, &chain->base.alloc);
+      if (mem != VK_NULL_HANDLE)
+         wsi->FreeMemory(dev, mem, &chain->base.alloc);
+      return r;
+   }
+   *out_image = img;
+   *out_mem = mem;
+   return VK_SUCCESS;
+}
+
+/* banner_ahb_setup_chain on the copy route. One CPU-linear probe buffer (kept for the first image) is
+ * bound once as a test; then the chain's own images become ordinary driver images -- no export, no
+ * modifier, optimal tiling -- and the swapchain takes Mesa's IMAGE_BLIT path, which copies each frame
+ * into the gralloc image at present (wsi_finish_create_blit_context). Leaves the chain on standard
+ * buffers when the driver can't bind the buffer. */
+static void
+banner_ahb_setup_chain_blit(struct wsi_wl_swapchain *chain)
+{
+   const struct wsi_device *wsi = chain->base.wsi;
+   struct wsi_image_info *info = &chain->base.image_info;
+   const char *e = getenv("BANNER_WSI_AHB_BLIT");
+   const char *why = (e && e[0] == '1') ? "BANNER_WSI_AHB_BLIT=1"
+                   : banner_ahb_driver_is_arm(wsi) ? "Arm driver"
+                   : "the driver presents by blit";
+
+   if (!wsi->GetAndroidHardwareBufferPropertiesANDROID) {
+      mesa_logw("banner-ahb: %ux%u swapchain on standard buffers: no "
+                "vkGetAndroidHardwareBufferPropertiesANDROID for the copy route",
+                chain->extent.width, chain->extent.height);
+      return;
+   }
+   uint32_t stride = 0;
+   uint64_t mod = DRM_FORMAT_MOD_LINEAR;
+   AHardwareBuffer *ahb = banner_ahb_alloc(chain, BANNER_AHB_REQ_CPU, &stride, &mod, NULL, NULL, 0);
+   if (!ahb) {
+      mesa_logw("banner-ahb: %ux%u swapchain on standard buffers: gralloc refused the copy route's buffer",
+                chain->extent.width, chain->extent.height);
+      return;
+   }
+   VkImage test = VK_NULL_HANDLE;
+   VkDeviceMemory test_mem = VK_NULL_HANDLE;
+   VkResult r = banner_ahb_blit_target(chain, ahb, &test, &test_mem);
+   if (r != VK_SUCCESS) {
+      banner_nw.release(ahb);
+      mesa_logw("banner-ahb: %ux%u swapchain on standard buffers: the driver cannot bind a gralloc buffer "
+                "as a copy target (%d)", chain->extent.width, chain->extent.height, r);
+      return;
+   }
+   wsi->DestroyImage(chain->base.device, test, &chain->base.alloc);
+   wsi->FreeMemory(chain->base.device, test_mem, &chain->base.alloc);
+
+   /* The program's images: ordinary driver images, the copy's source. */
+   banner_ahb_unlink(&info->create, &info->ext_mem);
+   banner_ahb_unlink(&info->create, &info->drm_mod_list);
+   info->create.tiling = VK_IMAGE_TILING_OPTIMAL;
+   chain->base.blit.type = WSI_SWAPCHAIN_IMAGE_BLIT;
+   wsi_configure_image_blit_image(&chain->base, info);
+
+   chain->banner.mode = true;
+   chain->banner.req = BANNER_AHB_REQ_CPU;
+   chain->banner.stride = stride;
+   chain->banner.modifier = DRM_FORMAT_MOD_LINEAR;
+   chain->banner.layout = (VkSubresourceLayout) {
+      .offset = 0,
+      .rowPitch = (VkDeviceSize)stride * vk_format_get_blocksize(chain->vk_format),
+   };
+   chain->banner.probe = ahb;
+   info->create_mem = banner_ahb_create_mem_blit;
+   mesa_logi("banner-ahb: %ux%u swapchain (%u images, format %d) on gralloc buffers: linear, stride %u px, "
+             "each frame copied in from the driver's own image (%s)", chain->extent.width,
+             chain->extent.height, chain->base.image_count, chain->vk_format, stride, why);
+}
 
 /* Decide, once per swapchain, whether its images come from gralloc and with which request (the
  * order is at the top of banner_ahb_wsi.py). Each request allocates a probe buffer (kept for the
@@ -559,7 +776,11 @@ banner_ahb_setup_chain(struct wsi_wl_swapchain *chain)
    if (!chain->banner.want)
       return;
    if (chain->buffer_type != WSI_WL_BUFFER_NATIVE || chain->base.blit.type != WSI_SWAPCHAIN_NO_BLIT ||
-       info->explicit_sync || !wsi->supports_modifiers)
+       info->explicit_sync)
+      return;
+   /* The copy route needs no DRM modifiers: the driver never sees the buffer as a dma-buf. */
+   const bool blit = banner_ahb_blit_route(wsi);
+   if (!blit && !wsi->supports_modifiers)
       return;
    chain->banner.ahb_format = banner_ahb_format_for(chain->vk_format);
    if (!chain->banner.ahb_format) {
@@ -568,6 +789,10 @@ banner_ahb_setup_chain(struct wsi_wl_swapchain *chain)
    }
    if (!banner_ahb_load())
       return;
+   if (blit) {
+      banner_ahb_setup_chain_blit(chain);
+      return;
+   }
 
    const char *lin = getenv("BANNER_WSI_AHB_LINEAR");
    const bool force_linear = lin && lin[0] == '1';
@@ -754,6 +979,72 @@ banner_ahb_create_mem(const struct wsi_swapchain *wsi_chain,
    image->dma_buf_fd = os_dupfd_cloexec(fd);
    image->num_planes = 1;
    image->drm_modifier = mod;
+   image->offsets[0] = 0;
+   image->row_pitches[0] = (uint32_t)chain->banner.layout.rowPitch;
+   image->sizes[0] = image->row_pitches[0] * chain->extent.height;
+   wl_image->banner_ahb = ahb;
+   wl_image->banner_stride = stride;
+   return VK_SUCCESS;
+}
+
+/* image_info.create_mem on the copy route: device memory for the program's own image, and the gralloc
+ * buffer bound to the copy target (image->blit, which wsi_destroy_image frees), described for
+ * zwp_linux_dmabuf_v1 like banner_ahb_create_mem does. */
+static VkResult
+banner_ahb_create_mem_blit(const struct wsi_swapchain *wsi_chain,
+                           const struct wsi_image_info *info,
+                           struct wsi_image *image)
+{
+   struct wsi_wl_swapchain *chain = (struct wsi_wl_swapchain *)wsi_chain;
+   struct wsi_wl_image *wl_image = wl_container_of(image, wl_image, base);
+   const struct wsi_device *wsi = wsi_chain->wsi;
+   AHardwareBuffer *ahb = chain->banner.probe;
+   uint32_t stride = chain->banner.stride;
+   uint64_t mod = DRM_FORMAT_MOD_LINEAR;
+
+   chain->banner.probe = NULL;
+   if (!ahb)
+      ahb = banner_ahb_alloc(chain, BANNER_AHB_REQ_CPU, &stride, &mod, NULL, NULL, 0);
+   if (!ahb)
+      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   if (stride != chain->banner.stride) {
+      mesa_logw("banner-ahb: gralloc changed its layout between buffers (stride %u -> %u)", chain->banner.stride, stride);
+      banner_nw.release(ahb);
+      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   }
+
+   VkMemoryRequirements reqs;
+   wsi->GetImageMemoryRequirements(wsi_chain->device, image->image, &reqs);
+   const VkMemoryDedicatedAllocateInfo dedicated = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+      .image = image->image,
+   };
+   const VkMemoryAllocateInfo alloc_info = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .pNext = &dedicated,
+      .allocationSize = reqs.size,
+      .memoryTypeIndex = wsi_select_device_memory_type(wsi, reqs.memoryTypeBits),
+   };
+   VkResult result = wsi->AllocateMemory(wsi_chain->device, &alloc_info, &wsi_chain->alloc, &image->memory);
+   if (result != VK_SUCCESS) {
+      image->memory = VK_NULL_HANDLE;
+      banner_nw.release(ahb);
+      return result;
+   }
+   result = banner_ahb_blit_target(chain, ahb, &image->blit.image, &image->blit.memory);
+   if (result != VK_SUCCESS) {
+      mesa_logw("banner-ahb: binding the gralloc buffer as the copy target failed (%d)", result);
+      banner_nw.release(ahb);
+      return result;
+   }
+   const struct banner_native_handle *h = banner_nw.getNativeHandle(ahb);
+   image->dma_buf_fd = (h && h->numFds >= 1) ? os_dupfd_cloexec(h->data[0]) : -1;
+   if (image->dma_buf_fd < 0) {
+      banner_nw.release(ahb);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+   image->num_planes = 1;
+   image->drm_modifier = DRM_FORMAT_MOD_LINEAR;
    image->offsets[0] = 0;
    image->row_pitches[0] = (uint32_t)chain->banner.layout.rowPitch;
    image->sizes[0] = image->row_pitches[0] * chain->extent.height;
