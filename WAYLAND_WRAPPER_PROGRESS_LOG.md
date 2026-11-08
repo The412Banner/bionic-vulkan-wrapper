@@ -483,3 +483,6 @@ Build: `banner/build_wayland_wrapper.sh`, workflow `.github/workflows/banner-way
   [memfd 4 KiB, dma-heap dma-buf 3.5 MiB, memfd 8 MiB] -> picked [1]; NULL/empty -> -1; gcc -Wall -Wextra -fsanitize=undefined
   clean. CI 42466517534 (headSha f65c79d9) success x4, new build check line "in", no new warnings; pipetto-ahb .so sha256
   ef609595... -> Bannerlator fix/wayland-mali-ahb-blit f448549a. NOT device-tested.
+- 2026-11-08 ~06:07 EST: Bannerlator build-artifacts 42467072138 (headSha f448549a, this adapter's ef609595... .so) success x4
+  (pubg after 3 re-runs: GitHub release-download 504s in "Fetch dxvk-nvapi"); 4 APKs staged in /sdcard/Download; posted to
+  Mali testers in BannerHub (#winlator-general reply to gtaforever00 + #general-mali-and-support). NOT device-tested.
