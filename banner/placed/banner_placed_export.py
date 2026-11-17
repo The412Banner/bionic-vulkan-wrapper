@@ -22,6 +22,12 @@ VK_ERROR_MEMORY_MAP_FAILED instead of returning another address.
 Wine's OpenGL device enables the VK_EXT_map_memory_placed extension but not the memoryMapPlaced feature (it only
 queries it), so the wrapper's allocation emulation, which required the feature, never ran for it; the extension
 alone now turns the emulation on, as drivers with native placed mapping behave.
+
+vkFlushMappedMemoryRanges / vkInvalidateMappedMemoryRanges of memory the wrapper mapped itself went to the driver,
+which cleans its own CPU mapping by address (Turnip: bo->map, NULL for such memory) and faulted; Wine flushes
+every GL buffer write ("glFlushMappedBufferRange returned 0xc0000005", then its GL lock stays held and rendering
+stops). The wrapper now cleans / invalidates its own mapping for those ranges (dc cvac / dc civac by cache line,
+as Turnip does) and passes the rest to the driver.
 """
 import os
 import sys
@@ -125,6 +131,81 @@ patch(
     "    * placed anyway (drivers with native support honour that): the extension is enough here. */\n"
     "   if (!device->vk.enabled_extensions.EXT_map_memory_placed)\n"
     "      goto fallback;\n",
+)
+
+patch("#include <sys/mman.h>\n", "#include <sys/mman.h>\n#include <stdlib.h>\n")
+
+patch(
+    "VKAPI_ATTR void VKAPI_CALL\nwrapper_UnmapMemory(",
+    "/* Flush / invalidate of memory the wrapper mapped itself: the driver keeps no CPU mapping of it (Turnip cleans\n"
+    " * its own bo->map line by line and would touch NULL), so the wrapper cleans or invalidates its own mapping\n"
+    " * the same way; ranges of other memory go to the driver unchanged (banner/placed/banner_placed_export.py). */\n"
+    "static void\n"
+    "banner_sync_cache_range(const struct wrapper_device_memory *mem, VkDeviceSize offset, VkDeviceSize size,\n"
+    "                        bool to_gpu)\n"
+    "{\n"
+    "   uint64_t ctr;\n"
+    "   uintptr_t line, start, end;\n"
+    "\n"
+    "   if (!mem->map_address || offset >= mem->map_size)\n"
+    "      return;\n"
+    "   __asm__ volatile(\"mrs %0, ctr_el0\" : \"=r\"(ctr));\n"
+    "   line = (uintptr_t)4 << ((ctr >> 16) & 0xf);\n"
+    "   start = (uintptr_t)mem->map_address + offset;\n"
+    "   end = (size == VK_WHOLE_SIZE || offset + size > mem->map_size) ?\n"
+    "      (uintptr_t)mem->map_address + mem->map_size : start + size;\n"
+    "   for (start &= ~(line - 1); start < end; start += line) {\n"
+    "      if (to_gpu)\n"
+    "         __asm__ volatile(\"dc cvac, %0\" :: \"r\"(start) : \"memory\");\n"
+    "      else\n"
+    "         __asm__ volatile(\"dc civac, %0\" :: \"r\"(start) : \"memory\");\n"
+    "   }\n"
+    "   __asm__ volatile(\"dsb sy\" ::: \"memory\");\n"
+    "}\n"
+    "\n"
+    "static VkResult\n"
+    "banner_sync_ranges(VkDevice _device, uint32_t count, const VkMappedMemoryRange *ranges, bool to_gpu)\n"
+    "{\n"
+    "   VK_FROM_HANDLE(wrapper_device, device, _device);\n"
+    "   VkMappedMemoryRange stack_ranges[16];\n"
+    "   VkMappedMemoryRange *rest = count <= 16 ? stack_ranges : malloc(count * sizeof(*rest));\n"
+    "   VkResult result = VK_SUCCESS;\n"
+    "   uint32_t n = 0;\n"
+    "\n"
+    "   if (!rest)\n"
+    "      return VK_ERROR_OUT_OF_HOST_MEMORY;\n"
+    "   for (uint32_t i = 0; i < count; i++) {\n"
+    "      struct wrapper_device_memory *mem =\n"
+    "         wrapper_device_memory_from_handle(device, ranges[i].memory);\n"
+    "      if (mem && mem->map_address)\n"
+    "         banner_sync_cache_range(mem, ranges[i].offset, ranges[i].size, to_gpu);\n"
+    "      else\n"
+    "         rest[n++] = ranges[i];\n"
+    "   }\n"
+    "   if (n)\n"
+    "      result = to_gpu ?\n"
+    "         device->dispatch_table.FlushMappedMemoryRanges(device->dispatch_handle, n, rest) :\n"
+    "         device->dispatch_table.InvalidateMappedMemoryRanges(device->dispatch_handle, n, rest);\n"
+    "   if (rest != stack_ranges)\n"
+    "      free(rest);\n"
+    "   return result;\n"
+    "}\n"
+    "\n"
+    "VKAPI_ATTR VkResult VKAPI_CALL\n"
+    "wrapper_FlushMappedMemoryRanges(VkDevice device, uint32_t memoryRangeCount,\n"
+    "                                const VkMappedMemoryRange *pMemoryRanges)\n"
+    "{\n"
+    "   return banner_sync_ranges(device, memoryRangeCount, pMemoryRanges, true);\n"
+    "}\n"
+    "\n"
+    "VKAPI_ATTR VkResult VKAPI_CALL\n"
+    "wrapper_InvalidateMappedMemoryRanges(VkDevice device, uint32_t memoryRangeCount,\n"
+    "                                     const VkMappedMemoryRange *pMemoryRanges)\n"
+    "{\n"
+    "   return banner_sync_ranges(device, memoryRangeCount, pMemoryRanges, false);\n"
+    "}\n"
+    "\n"
+    "VKAPI_ATTR void VKAPI_CALL\nwrapper_UnmapMemory(",
 )
 
 print("pipetto: placed mapping for exportable host-visible memory applied")
