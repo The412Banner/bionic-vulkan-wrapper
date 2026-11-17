@@ -216,6 +216,7 @@ PY2
 	apply_passthrough
 	apply_mali_switches
 	apply_subgroup_props
+	apply_placed_export
 }
 
 # Zero-timeout KGSL timestamp waits as real polls (banner/kgsl/banner_kgsl_poll.h has the why): the
@@ -346,6 +347,14 @@ PY4
 # subgroup stages" (device test 2026-10-21; Turnip under the wrapper reports 0x3f/0x6ff on Adreno 750).
 # Keep the zeroing only for the vendor blobs (Qualcomm, ARM) and pass the driver's own values through
 # on Mesa drivers (Turnip, PanVK). BANNER_WRAPPER_NO_SUBGROUPS=1 zeroes them on every driver again.
+# Placed mapping for exportable host-visible memory (banner/placed/banner_placed_export.py has the why): Wine's
+# wow64 OpenGL backs a 32-bit program's GL buffers with exportable Vulkan memory and maps it placed below 4 GB;
+# the wrapper now keeps an fd for such memory so the placement holds. Pipetto tree only.
+apply_placed_export(){
+	log "applying banner/placed/banner_placed_export.py"
+	python3 "$repo/banner/placed/banner_placed_export.py" "$mesa" || die "placed export patch failed"
+}
+
 apply_subgroup_props(){
 	python3 - "$mesa" <<'PY5' || die "subgroup properties patch failed"
 import sys, os
