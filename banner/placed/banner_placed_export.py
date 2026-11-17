@@ -18,6 +18,10 @@ more (vkGetMemoryFdKHR, dma-buf first, else opaque fd) so the wrapper keeps an f
 like its own; the existing placed map, unmap and free code then handles it. If the driver gives no fd, the
 allocation stays plain. A placed map of memory the wrapper does not track now fails with
 VK_ERROR_MEMORY_MAP_FAILED instead of returning another address.
+
+Wine's OpenGL device enables the VK_EXT_map_memory_placed extension but not the memoryMapPlaced feature (it only
+queries it), so the wrapper's allocation emulation, which required the feature, never ran for it; the extension
+alone now turns the emulation on, as drivers with native placed mapping behave.
 """
 import os
 import sys
@@ -111,6 +115,16 @@ patch(
     "      return VK_ERROR_MEMORY_MAP_FAILED;\n"
     "   }\n"
     "   if (!placed_info || !mem) {\n",
+)
+
+patch(
+    "   if (!device->vk.enabled_features.memoryMapPlaced ||\n"
+    "       !device->vk.enabled_extensions.EXT_map_memory_placed)\n"
+    "      goto fallback;\n",
+    "   /* Wine's wow64 OpenGL enables VK_EXT_map_memory_placed without the memoryMapPlaced feature and maps\n"
+    "    * placed anyway (drivers with native support honour that): the extension is enough here. */\n"
+    "   if (!device->vk.enabled_extensions.EXT_map_memory_placed)\n"
+    "      goto fallback;\n",
 )
 
 print("pipetto: placed mapping for exportable host-visible memory applied")
